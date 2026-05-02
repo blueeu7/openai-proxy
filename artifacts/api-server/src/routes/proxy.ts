@@ -17,14 +17,40 @@ const anthropic = new Anthropic({
 });
 
 const MODELS = [
-  { id: "gpt-5.2", provider: "openai" },
+  { id: "gpt-4.1", provider: "openai" },
+  { id: "gpt-4.1-mini", provider: "openai" },
+  { id: "gpt-4.1-nano", provider: "openai" },
+  { id: "gpt-4o", provider: "openai" },
+  { id: "gpt-4o-mini", provider: "openai" },
+  { id: "gpt-5", provider: "openai" },
   { id: "gpt-5-mini", provider: "openai" },
   { id: "gpt-5-nano", provider: "openai" },
-  { id: "o4-mini", provider: "openai" },
+  { id: "gpt-5-pro", provider: "openai" },
+  { id: "gpt-5.1", provider: "openai" },
+  { id: "gpt-5.1-codex", provider: "openai" },
+  { id: "gpt-5.1-codex-mini", provider: "openai" },
+  { id: "gpt-5.2", provider: "openai" },
+  { id: "gpt-5.2-codex", provider: "openai" },
+  { id: "gpt-5.2-pro", provider: "openai" },
+  { id: "gpt-5.3-chat-latest", provider: "openai" },
+  { id: "gpt-5.3-codex", provider: "openai" },
+  { id: "gpt-5.4", provider: "openai" },
+  { id: "gpt-5.4-mini", provider: "openai" },
+  { id: "gpt-5.4-nano", provider: "openai" },
+  { id: "gpt-5.4-pro", provider: "openai" },
+  { id: "gpt-5.5", provider: "openai" },
+  { id: "gpt-5.5-pro", provider: "openai" },
   { id: "o3", provider: "openai" },
+  { id: "o3-mini", provider: "openai" },
+  { id: "o4-mini", provider: "openai" },
+  { id: "claude-opus-4-7", provider: "anthropic" },
   { id: "claude-opus-4-6", provider: "anthropic" },
-  { id: "claude-sonnet-4-6", provider: "anthropic" },
   { id: "claude-opus-4-5", provider: "anthropic" },
+  { id: "claude-sonnet-4-6", provider: "anthropic" },
+  { id: "claude-haiku-4-5", provider: "anthropic" },
+  { id: "claude-opus-4-7-thinking", provider: "anthropic" },
+  { id: "claude-opus-4-6-thinking", provider: "anthropic" },
+  { id: "claude-opus-4-5-thinking", provider: "anthropic" },
 ];
 
 interface ModelStats {
@@ -125,6 +151,7 @@ router.get("/usage", (_req: Request, res: Response) => {
 router.get("/quota-status", async (_req: Request, res: Response) => {
   async function checkProvider(name: "openai" | "anthropic"): Promise<{ available: boolean; error: string | null; code: string | null }> {
     try {
+      const QUOTA_CODES = new Set(["FREE_TIER_BUDGET_EXCEEDED", "insufficient_quota", "rate_limit_exceeded"]);
       if (name === "openai") {
         const r = await fetch(
           (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL ?? "") + "/chat/completions",
@@ -134,13 +161,18 @@ router.get("/quota-status", async (_req: Request, res: Response) => {
               "Content-Type": "application/json",
               Authorization: `Bearer ${process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? ""}`,
             },
-            body: JSON.stringify({ model: "gpt-5-mini", max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
-            signal: AbortSignal.timeout(10000),
+            body: JSON.stringify({ model: "gpt-5-mini", max_completion_tokens: 5, messages: [{ role: "user", content: "hi" }] }),
+            signal: AbortSignal.timeout(15000),
           },
         );
         if (r.ok) return { available: true, error: null, code: null };
         const data = (await r.json()) as { error?: { code?: string; message?: string } };
-        return { available: false, error: data.error?.message ?? "Unknown error", code: data.error?.code ?? null };
+        const code = data.error?.code ?? null;
+        // Only treat quota/budget errors as truly unavailable; other API errors mean the service is up
+        if (code && QUOTA_CODES.has(code)) {
+          return { available: false, error: data.error?.message ?? "Unknown error", code };
+        }
+        return { available: true, error: null, code: null };
       } else {
         const r = await fetch(
           (process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL ?? "") + "/messages",
@@ -151,13 +183,17 @@ router.get("/quota-status", async (_req: Request, res: Response) => {
               "x-api-key": process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY ?? "",
               "anthropic-version": "2023-06-01",
             },
-            body: JSON.stringify({ model: "claude-opus-4-5", max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
-            signal: AbortSignal.timeout(10000),
+            body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: 5, messages: [{ role: "user", content: "hi" }] }),
+            signal: AbortSignal.timeout(15000),
           },
         );
         if (r.ok) return { available: true, error: null, code: null };
         const data = (await r.json()) as { error?: { code?: string; message?: string } };
-        return { available: false, error: data.error?.message ?? "Unknown error", code: data.error?.code ?? null };
+        const code = data.error?.code ?? null;
+        if (code && QUOTA_CODES.has(code)) {
+          return { available: false, error: data.error?.message ?? "Unknown error", code };
+        }
+        return { available: true, error: null, code: null };
       }
     } catch (e: unknown) {
       return { available: false, error: (e as Error).message, code: "NETWORK_ERROR" };
