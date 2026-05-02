@@ -49,6 +49,47 @@ router.post("/wake-all", (_req: Request, res: Response) => {
   res.json({ ok: true, woken });
 });
 
+router.post("/bulk", (req: Request, res: Response) => {
+  const { lines } = req.body as { lines?: string[] };
+  if (!Array.isArray(lines) || lines.length === 0) {
+    res.status(400).json({ error: "lines 数组不能为空" });
+    return;
+  }
+  const existing = loadUpstreams();
+  const existingUrls = new Set(existing.map((u) => u.url.toLowerCase()));
+  let imported = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+  lines.forEach((line, idx) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const parts = trimmed.split("----");
+    if (parts.length < 2) {
+      errors.push(`第 ${idx + 1} 行格式错误（需要 URL----API_KEY）`);
+      return;
+    }
+    const url = parts[0].trim().replace(/\/$/, "");
+    const apiKey = parts[1].trim();
+    const name = parts[2]?.trim() || `bulk-node-${String(imported + skipped + 1).padStart(3, "0")}`;
+    if (!url.startsWith("http")) {
+      errors.push(`第 ${idx + 1} 行 URL 无效: ${url.slice(0, 50)}`);
+      return;
+    }
+    if (!apiKey) {
+      errors.push(`第 ${idx + 1} 行缺少 API Key`);
+      return;
+    }
+    if (existingUrls.has(url.toLowerCase())) {
+      skipped++;
+      return;
+    }
+    addUpstream(name, url, apiKey, true, 1);
+    existingUrls.add(url.toLowerCase());
+    imported++;
+  });
+  res.json({ ok: true, imported, skipped, errors });
+});
+
 router.patch("/:id", (req: Request, res: Response) => {
   const updated = updateUpstream(req.params.id, req.body as Partial<Upstream>);
   if (!updated) {

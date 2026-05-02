@@ -1,0 +1,18 @@
+[
+  {
+    "nodeId": "cffeeeca-4fc0-459b-949c-ace4264cf536",
+    "name": "bulk-node-002",
+    "url": "https://proxy-test-02.replit.app",
+    "reason": "manual",
+    "id": "aaa60f67-87b7-4c56-8539-42a7534f9d0b",
+    "deletedAt": 1777732899778
+  },
+  {
+    "nodeId": "8cc8416e-5001-4c6a-9f1b-89271280196b",
+    "name": "测试节点01",
+    "url": "https://proxy-test-01.replit.app",
+    "reason": "manual",
+    "id": "9f8671f0-6120-4220-8c39-e3e78b51cffc",
+    "deletedAt": 1777732899731
+  }
+]

@@ -219,6 +219,10 @@ export default function App() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [editingNode, setEditingNode] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ name: "", url: "", apiKey: "", weight: 1 });
+  const [bulkText, setBulkText] = useState("");
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ imported: number; skipped: number; errors: string[] } | null>(null);
+  const [bulkFormOpen, setBulkFormOpen] = useState(false);
   const baseUrl = window.location.origin;
 
   /* ── Fetchers ─────────────────────────────────────────────────────────── */
@@ -314,6 +318,23 @@ export default function App() {
     fetchUpstreams();
   };
 
+  const bulkImport = async () => {
+    const lines = bulkText.split("\n").filter(l => l.trim());
+    if (lines.length === 0) return;
+    setBulkImporting(true);
+    setBulkResult(null);
+    try {
+      const r = await fetch(`${baseUrl}/api/upstreams/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lines }),
+      });
+      const d = await r.json() as { imported: number; skipped: number; errors: string[] };
+      setBulkResult(d);
+      if (d.imported > 0) { setBulkText(""); fetchUpstreams(); }
+    } finally { setBulkImporting(false); }
+  };
+
   useEffect(() => {
     fetch(`${baseUrl}/api/healthz`).then(r => setOnline(r.ok)).catch(() => setOnline(false));
     fetchUsage(); fetchQuotaStatus(); fetchUpstreams(); fetchCacheStats(); fetchDeletionLog(); fetchSettings();
@@ -332,6 +353,8 @@ export default function App() {
   const onlineCount  = upstreams.filter(u => u.status === "online").length;
   const expandedUpstream = upstreams.find(u => u.id === expandedNode) ?? null;
   const hasOffline = upstreams.some(u => u.status !== "online" && u.enabled);
+  const autoDisabledNodes = upstreams.filter(u => u.enabled && u.status === "offline" && u.consecutiveFailures > 0);
+  const warningNodes = upstreams.filter(u => u.status === "online" && u.consecutiveFailures > 0);
 
   /* ════════════════════════════════════════════════════════════════════════
      RENDER
@@ -493,17 +516,49 @@ export default function App() {
             </div>
           </LightCard>
 
+          {/* Auto-rotation alert banners */}
+          {autoDisabledNodes.length > 0 && (
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "10px", padding: "12px 16px", marginBottom: "14px", display: "flex", alignItems: "flex-start", gap: "12px" }}>
+              <span style={{ fontSize: "18px", flexShrink: 0 }}>🔄</span>
+              <div style={{ flex: 1 }}>
+                <p style={{ color: "#dc2626", fontSize: "13px", fontWeight: 700, margin: "0 0 4px" }}>自动轮换已触发 — {autoDisabledNodes.length} 个节点因连续错误被自动下线</p>
+                <p style={{ color: "#b91c1c", fontSize: "12px", margin: "0 0 8px" }}>以下节点连续失败次数已达上限（{settings?.maxConsecutiveFailures ?? 3} 次），已被系统自动停用，流量已无缝切换至健康节点。</p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "8px" }}>
+                  {autoDisabledNodes.map(n => (
+                    <span key={n.id} style={{ background: "white", border: "1px solid #fecaca", borderRadius: "5px", color: "#dc2626", fontSize: "11px", fontWeight: 600, padding: "2px 8px" }}>
+                      {n.name} ({n.consecutiveFailures} 次)
+                    </span>
+                  ))}
+                </div>
+                <button onClick={() => void wakeAll()} style={{ background: "white", border: "1px solid #fecaca", borderRadius: "6px", color: "#dc2626", cursor: "pointer", fontSize: "12px", fontWeight: 600, padding: "4px 12px" }}>⚡ 一键恢复全部</button>
+              </div>
+            </div>
+          )}
+          {warningNodes.length > 0 && (
+            <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "10px", padding: "10px 16px", marginBottom: "14px", display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "16px" }}>⚠️</span>
+              <p style={{ color: "#92400e", fontSize: "12px", margin: 0, flex: 1 }}>
+                <strong>{warningNodes.length}</strong> 个在线节点存在连续失败记录，尚未触发自动停用阈值（{settings?.maxConsecutiveFailures ?? 3} 次）。调度器将持续监控。
+              </p>
+            </div>
+          )}
+
           {/* 节点列表 header */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
             <SectionHeader>📋 节点列表</SectionHeader>
-            <div style={{ display: "flex", gap: "10px" }}>
+            <div style={{ display: "flex", gap: "8px" }}>
               {hasOffline && (
                 <button onClick={() => void wakeAll()}
                   style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", color: "#d97706", cursor: "pointer", fontSize: "13px", fontWeight: 600, padding: "7px 16px" }}>
                   ⚡ 唤醒全部
                 </button>
               )}
-              <button onClick={() => { setUpstreamFormOpen(v => !v); if (upstreamFormOpen) setExpandedNode(null); }}
+              <button
+                onClick={() => { setBulkFormOpen(v => !v); if (bulkFormOpen) { setBulkResult(null); } setUpstreamFormOpen(false); }}
+                style={{ background: bulkFormOpen ? "#0f766e" : "#0d9488", border: "none", borderRadius: "8px", color: "white", cursor: "pointer", fontSize: "13px", fontWeight: 600, padding: "7px 16px" }}>
+                {bulkFormOpen ? "✕ 关闭" : "📥 批量导入"}
+              </button>
+              <button onClick={() => { setUpstreamFormOpen(v => !v); if (upstreamFormOpen) setExpandedNode(null); setBulkFormOpen(false); }}
                 style={{ background: upstreamFormOpen ? C.blueHover : C.blue, border: "none", borderRadius: "8px", color: "white", cursor: "pointer", fontSize: "13px", fontWeight: 600, padding: "7px 18px" }}>
                 {upstreamFormOpen ? "✕ 取消" : "+ 手动添加"}
               </button>
@@ -520,6 +575,67 @@ export default function App() {
 
           {/* Node grid card */}
           <LightCard style={{ overflow: "hidden" }}>
+
+            {/* Bulk import panel */}
+            {bulkFormOpen && (
+              <div style={{ background: "#f0fdfa", borderBottom: `1px solid #99f6e4`, padding: "20px 22px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                  <span style={{ color: "#0f766e", fontSize: "14px", fontWeight: 700 }}>📥 批量节点导入</span>
+                  <span style={{ background: "#ccfbf1", border: "1px solid #99f6e4", borderRadius: "5px", color: "#0f766e", fontSize: "11px", fontWeight: 600, padding: "2px 8px" }}>每行一个</span>
+                </div>
+                <p style={{ color: "#134e4a", fontSize: "12px", margin: "0 0 10px", lineHeight: 1.6 }}>
+                  每行粘贴一个节点，支持两种格式：<br />
+                  <code style={{ background: "white", border: "1px solid #99f6e4", borderRadius: "4px", padding: "1px 6px", fontFamily: "monospace", fontSize: "12px" }}>https://xxx.replit.app----your-api-key</code>
+                  　或　
+                  <code style={{ background: "white", border: "1px solid #99f6e4", borderRadius: "4px", padding: "1px 6px", fontFamily: "monospace", fontSize: "12px" }}>https://xxx.replit.app----your-api-key----节点名称</code>
+                </p>
+                <textarea
+                  value={bulkText}
+                  onChange={e => { setBulkText(e.target.value); setBulkResult(null); }}
+                  placeholder={"https://proxy-01.replit.app----sk-abc123\nhttps://proxy-02.replit.app----sk-def456----我的节点02\nhttps://proxy-03.replit.app----sk-ghi789"}
+                  rows={6}
+                  style={{ width: "100%", background: "white", border: "1px solid #99f6e4", borderRadius: "8px", boxSizing: "border-box", color: "#134e4a", fontFamily: "monospace", fontSize: "12px", lineHeight: 1.7, outline: "none", padding: "10px 12px", resize: "vertical" }}
+                />
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "10px", flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => void bulkImport()}
+                    disabled={bulkImporting || !bulkText.trim()}
+                    style={{ background: bulkImporting || !bulkText.trim() ? "#99f6e4" : "#0d9488", border: "none", borderRadius: "7px", color: "white", cursor: bulkImporting || !bulkText.trim() ? "not-allowed" : "pointer", fontSize: "13px", fontWeight: 700, padding: "9px 22px" }}>
+                    {bulkImporting ? "导入中…" : `🚀 导入节点`}
+                  </button>
+                  {bulkText.trim() && (
+                    <span style={{ color: "#0f766e", fontSize: "12px" }}>
+                      已输入 {bulkText.split("\n").filter(l => l.trim()).length} 行
+                    </span>
+                  )}
+                  {bulkResult && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <span style={{ background: bulkResult.imported > 0 ? "#dcfce7" : "#f1f5f9", border: `1px solid ${bulkResult.imported > 0 ? "#bbf7d0" : C.border}`, borderRadius: "5px", color: bulkResult.imported > 0 ? "#16a34a" : C.text2, fontSize: "12px", fontWeight: 600, padding: "3px 10px" }}>
+                        ✓ 成功导入 {bulkResult.imported} 个
+                      </span>
+                      {bulkResult.skipped > 0 && (
+                        <span style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "5px", color: "#92400e", fontSize: "12px", fontWeight: 600, padding: "3px 10px" }}>
+                          ⊘ 跳过 {bulkResult.skipped} 个重复
+                        </span>
+                      )}
+                      {bulkResult.errors.length > 0 && (
+                        <span style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "5px", color: "#dc2626", fontSize: "12px", fontWeight: 600, padding: "3px 10px" }}>
+                          ✗ {bulkResult.errors.length} 行错误
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {bulkResult && bulkResult.errors.length > 0 && (
+                  <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "7px", marginTop: "10px", padding: "10px 14px" }}>
+                    <p style={{ color: "#dc2626", fontSize: "12px", fontWeight: 700, margin: "0 0 6px" }}>错误详情：</p>
+                    {bulkResult.errors.map((e, i) => (
+                      <p key={i} style={{ color: "#b91c1c", fontSize: "11px", fontFamily: "monospace", margin: "2px 0" }}>• {e}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Add form */}
             {upstreamFormOpen && (
@@ -568,15 +684,21 @@ export default function App() {
                     const isSelected = expandedNode === u.id;
                     return (
                       <button key={u.id} onClick={() => { setExpandedNode(n => n === u.id ? null : u.id); setEditingNode(null); }}
-                        style={{ background: isSelected ? C.bluePale : C.card, border: `1px solid ${isSelected ? C.blue : C.border}`, borderRadius: "9px", cursor: "pointer", padding: "10px 12px", textAlign: "left", transition: "all 0.15s", display: "flex", flexDirection: "column", gap: "5px", boxShadow: isSelected ? `0 0 0 2px ${C.blueLight}` : C.shadowSm }}>
+                        style={{ background: isSelected ? C.bluePale : C.card, border: `1px solid ${isSelected ? C.blue : u.consecutiveFailures > 0 && u.status !== "offline" ? "#fde68a" : C.border}`, borderRadius: "9px", cursor: "pointer", padding: "10px 12px", textAlign: "left", transition: "all 0.15s", display: "flex", flexDirection: "column", gap: "5px", boxShadow: isSelected ? `0 0 0 2px ${C.blueLight}` : C.shadowSm, position: "relative" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: sc.dot, flexShrink: 0, boxShadow: `0 0 0 2px ${sc.bg}` }} />
                           <span style={{ color: C.text, fontSize: "12px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{u.name}</span>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "5px", flexWrap: "wrap" }}>
                           <span style={{ color: sc.color, fontSize: "10px" }}>{sc.label}</span>
                           {u.weight > 1 && <span style={{ background: C.blueLight, borderRadius: "4px", color: C.blue, fontSize: "9px", fontWeight: 700, padding: "1px 5px" }}>W{u.weight}</span>}
                           {!u.enabled && <span style={{ color: C.text3, fontSize: "10px" }}>禁用</span>}
+                          {u.consecutiveFailures > 0 && u.status === "offline" && (
+                            <span style={{ background: "#fef2f2", borderRadius: "4px", color: "#dc2626", fontSize: "9px", fontWeight: 700, padding: "1px 5px" }}>🔄 自动停用</span>
+                          )}
+                          {u.consecutiveFailures > 0 && u.status !== "offline" && (
+                            <span style={{ background: "#fffbeb", borderRadius: "4px", color: "#d97706", fontSize: "9px", fontWeight: 700, padding: "1px 5px" }}>⚠ {u.consecutiveFailures}次</span>
+                          )}
                         </div>
                       </button>
                     );
