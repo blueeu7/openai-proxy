@@ -107,13 +107,22 @@ interface QuotaStatus {
   checkedAt: number;
 }
 
+type NodeStatus = "online" | "offline" | "quota_exceeded" | "monthly_limit" | "banned";
+
 interface UpstreamInfo {
   id: string;
   name: string;
   url: string;
   apiKey: string;
   enabled: boolean;
+  status: NodeStatus;
   createdAt: number;
+  lastSeenAt: number | null;
+  lastErrorAt: number | null;
+  lastErrorMsg: string | null;
+  consecutiveFailures: number;
+  totalRequests: number;
+  totalErrors: number;
 }
 
 interface UpstreamTestResult {
@@ -122,6 +131,14 @@ interface UpstreamTestResult {
   error?: string;
   testing?: boolean;
 }
+
+const STATUS_CFG: Record<NodeStatus, { label: string; color: string; bg: string; border: string }> = {
+  online:         { label: "在线",    color: "#4ade80", bg: "rgba(74,222,128,0.1)",   border: "rgba(74,222,128,0.25)" },
+  offline:        { label: "离线",    color: "#f87171", bg: "rgba(248,113,113,0.1)", border: "rgba(248,113,113,0.25)" },
+  quota_exceeded: { label: "429超限", color: "#fbbf24", bg: "rgba(251,191,36,0.1)",  border: "rgba(251,191,36,0.25)" },
+  monthly_limit:  { label: "403月限", color: "#fb923c", bg: "rgba(251,146,60,0.1)",  border: "rgba(251,146,60,0.25)" },
+  banned:         { label: "已封禁",  color: "#64748b", bg: "rgba(100,116,139,0.1)", border: "rgba(100,116,139,0.25)" },
+};
 
 function calcCost(modelId: string, inputTokens: number, outputTokens: number): number {
   const p = MODEL_PRICING[modelId];
@@ -297,6 +314,12 @@ export default function App() {
     const r = await fetch(`${baseUrl}/api/upstreams/${id}/test`, { method: "POST" });
     const data = (await r.json()) as UpstreamTestResult;
     setTestResults((prev) => ({ ...prev, [id]: { ...data, testing: false } }));
+    fetchUpstreams();
+  };
+
+  const wakeUpstreamNode = async (id: string) => {
+    await fetch(`${baseUrl}/api/upstreams/${id}/wake`, { method: "POST" });
+    fetchUpstreams();
   };
 
   useEffect(() => {
@@ -422,113 +445,169 @@ export default function App() {
           );
         })()}
 
-        {/* Upstream Pool */}
+        {/* Node Management Panel */}
         <Card>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+          {/* Header */}
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "14px", gap: "12px" }}>
             <div>
-              <SectionTitle>上游节点池</SectionTitle>
+              <SectionTitle>节点管理</SectionTitle>
               <p style={{ color: "#64748b", fontSize: "12px", margin: "-12px 0 0" }}>
-                整合多个 Replit 账号的代理实例，请求按轮询分发，自动故障转移至本地
+                中心调度器 · 轮询路由 · 自动健康监测 · 故障转移至本地
               </p>
             </div>
             <button
               onClick={() => setUpstreamFormOpen((v) => !v)}
               style={{ background: "linear-gradient(135deg,#3b82f6,#6366f1)", border: "none", borderRadius: "7px", color: "white", cursor: "pointer", fontSize: "12px", fontWeight: 600, padding: "6px 14px", flexShrink: 0 }}
             >
-              {upstreamFormOpen ? "取消" : "+ 添加节点"}
+              {upstreamFormOpen ? "取消" : "+ 注册节点"}
             </button>
           </div>
 
+          {/* Cluster Summary */}
+          {upstreams.length > 0 && (() => {
+            const total = upstreams.length;
+            const online = upstreams.filter(u => u.enabled && u.status === "online").length;
+            const offline = upstreams.filter(u => u.enabled && u.status === "offline").length;
+            const quota = upstreams.filter(u => u.status === "quota_exceeded").length;
+            const monthly = upstreams.filter(u => u.status === "monthly_limit").length;
+            const banned = upstreams.filter(u => !u.enabled || u.status === "banned").length;
+            return (
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "14px", padding: "10px 14px", background: "rgba(0,0,0,0.2)", borderRadius: "8px", alignItems: "center" }}>
+                <span style={{ color: "#64748b", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginRight: "4px" }}>集群</span>
+                {[
+                  { label: "在线", count: online, color: "#4ade80" },
+                  { label: "离线", count: offline, color: "#f87171" },
+                  { label: "超限", count: quota + monthly, color: "#fbbf24" },
+                  { label: "停用", count: banned, color: "#475569" },
+                ].map(({ label, count, color }) => count > 0 && (
+                  <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: "4px", background: "rgba(255,255,255,0.05)", borderRadius: "5px", padding: "3px 8px" }}>
+                    <span style={{ color, fontSize: "13px", fontWeight: 700 }}>{count}</span>
+                    <span style={{ color: "#64748b", fontSize: "11px" }}>{label}</span>
+                  </span>
+                ))}
+                <span style={{ marginLeft: "auto", color: "#334155", fontSize: "11px" }}>共 {total} 节点</span>
+              </div>
+            );
+          })()}
+
+          {/* Add Form */}
           {upstreamFormOpen && (
             <div style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: "10px", padding: "16px", marginBottom: "16px" }}>
-              <p style={{ color: "#93c5fd", fontSize: "12px", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.06em" }}>新建上游节点</p>
+              <p style={{ color: "#93c5fd", fontSize: "12px", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.06em" }}>注册新节点</p>
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                  <input
-                    placeholder="节点名称（如 账号2）"
-                    value={upstreamForm.name}
+                  <input placeholder="节点名称（如 账号2）" value={upstreamForm.name}
                     onChange={(e) => setUpstreamForm((f) => ({ ...f, name: e.target.value }))}
-                    style={{ flex: "1 1 140px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }}
-                  />
-                  <input
-                    placeholder="部署地址（如 https://xxx.replit.app）"
-                    value={upstreamForm.url}
+                    style={{ flex: "1 1 140px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }} />
+                  <input placeholder="部署地址（如 https://xxx.replit.app）" value={upstreamForm.url}
                     onChange={(e) => setUpstreamForm((f) => ({ ...f, url: e.target.value }))}
-                    style={{ flex: "2 1 260px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }}
-                  />
+                    style={{ flex: "2 1 260px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }} />
                 </div>
                 <div style={{ display: "flex", gap: "10px" }}>
-                  <input
-                    placeholder="API Key（PROXY_API_KEY，默认 123）"
-                    value={upstreamForm.apiKey}
+                  <input placeholder="API Key（PROXY_API_KEY，默认 123）" value={upstreamForm.apiKey}
                     onChange={(e) => setUpstreamForm((f) => ({ ...f, apiKey: e.target.value }))}
-                    style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none", fontFamily: "monospace" }}
-                  />
-                  <button
-                    onClick={addUpstream}
+                    style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none", fontFamily: "monospace" }} />
+                  <button onClick={addUpstream}
                     disabled={upstreamAdding || !upstreamForm.name || !upstreamForm.url || !upstreamForm.apiKey}
-                    style={{ background: upstreamAdding ? "rgba(99,102,241,0.3)" : "rgba(99,102,241,0.8)", border: "none", borderRadius: "7px", color: "white", cursor: upstreamAdding ? "not-allowed" : "pointer", fontSize: "13px", fontWeight: 600, padding: "8px 18px", flexShrink: 0 }}
-                  >
-                    {upstreamAdding ? "添加中…" : "确认添加"}
+                    style={{ background: upstreamAdding ? "rgba(99,102,241,0.3)" : "rgba(99,102,241,0.8)", border: "none", borderRadius: "7px", color: "white", cursor: upstreamAdding ? "not-allowed" : "pointer", fontSize: "13px", fontWeight: 600, padding: "8px 18px", flexShrink: 0 }}>
+                    {upstreamAdding ? "添加中…" : "确认注册"}
                   </button>
                 </div>
               </div>
               <p style={{ color: "#475569", fontSize: "11px", margin: "10px 0 0" }}>
-                填入其他 Replit 账号部署好的代理 URL 和对应 PROXY_API_KEY，本实例会将请求转发过去
+                节点默认被动接收流量，注册后自动纳入轮询池。每 60 秒自动健康检测，429/403 自动标记状态，3 次连续失败后标记为离线。
               </p>
             </div>
           )}
 
+          {/* Node Grid */}
           {upstreams.length === 0 ? (
-            <div style={{ background: "rgba(0,0,0,0.15)", border: "1px dashed rgba(255,255,255,0.1)", borderRadius: "8px", padding: "24px", textAlign: "center" }}>
-              <p style={{ color: "#475569", fontSize: "24px", margin: "0 0 8px" }}>🔗</p>
-              <p style={{ color: "#475569", fontSize: "13px", margin: 0 }}>暂无上游节点。添加后，请求将优先路由至这些节点，全部失败时自动回退至本账号。</p>
+            <div style={{ background: "rgba(0,0,0,0.15)", border: "1px dashed rgba(255,255,255,0.1)", borderRadius: "8px", padding: "32px", textAlign: "center" }}>
+              <p style={{ color: "#475569", fontSize: "28px", margin: "0 0 10px" }}>🔗</p>
+              <p style={{ color: "#64748b", fontSize: "13px", margin: "0 0 4px", fontWeight: 600 }}>暂无节点</p>
+              <p style={{ color: "#475569", fontSize: "12px", margin: 0 }}>注册其他 Replit 账号部署的代理地址后，请求将优先路由至节点池，全部失败时回退至本账号。</p>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "10px" }}>
               {upstreams.map((u) => {
+                const effectiveStatus: NodeStatus = !u.enabled ? "banned" : u.status;
+                const cfg = STATUS_CFG[effectiveStatus];
                 const tr = testResults[u.id];
+                const canWake = u.enabled && effectiveStatus !== "online";
+                const lastSeen = u.lastSeenAt ? timeAgo(u.lastSeenAt) : null;
+                const lastErr = u.lastErrorAt ? timeAgo(u.lastErrorAt) : null;
                 return (
-                  <div key={u.id} style={{ background: "rgba(0,0,0,0.2)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.15)" : "rgba(255,255,255,0.07)"}`, borderRadius: "9px", padding: "12px 16px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: u.enabled ? "#4ade80" : "#475569", flexShrink: 0 }} />
-                      <span style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: 600 }}>{u.name}</span>
-                      <code style={{ color: "#7dd3fc", fontSize: "11px", fontFamily: "monospace", background: "rgba(0,0,0,0.25)", padding: "2px 8px", borderRadius: "4px", wordBreak: "break-all" }}>{u.url}</code>
-                      {tr && !tr.testing && (
-                        <span style={{ fontSize: "11px", color: tr.ok ? "#4ade80" : "#f87171", background: tr.ok ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)", borderRadius: "4px", padding: "2px 7px" }}>
-                          {tr.ok ? `✓ ${tr.ms}ms` : `✗ ${tr.error?.slice(0, 60) ?? "失败"}`}
-                        </span>
-                      )}
-                      <div style={{ marginLeft: "auto", display: "flex", gap: "6px", alignItems: "center" }}>
-                        <button
-                          onClick={() => testUpstream(u.id)}
-                          disabled={tr?.testing}
-                          style={{ background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: "5px", color: "#60a5fa", cursor: tr?.testing ? "not-allowed" : "pointer", fontSize: "11px", fontWeight: 500, padding: "3px 10px", opacity: tr?.testing ? 0.5 : 1 }}
-                        >
-                          {tr?.testing ? "检测中…" : "测试"}
-                        </button>
-                        <button
-                          onClick={() => toggleUpstream(u.id, !u.enabled)}
-                          style={{ background: u.enabled ? "rgba(74,222,128,0.12)" : "rgba(100,116,139,0.15)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.25)" : "rgba(100,116,139,0.25)"}`, borderRadius: "5px", color: u.enabled ? "#4ade80" : "#64748b", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "3px 10px" }}
-                        >
-                          {u.enabled ? "已启用" : "已禁用"}
-                        </button>
-                        <button
-                          onClick={() => deleteUpstream(u.id)}
-                          style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "5px", color: "#f87171", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "3px 10px" }}
-                        >
-                          删除
-                        </button>
+                  <div key={u.id} style={{ background: "rgba(0,0,0,0.22)", border: `1px solid ${cfg.border}`, borderRadius: "10px", padding: "14px 16px" }}>
+                    {/* Card header */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.color, flexShrink: 0, boxShadow: effectiveStatus === "online" ? `0 0 0 3px ${cfg.bg}` : undefined }} />
+                      <span style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</span>
+                      <span style={{ background: cfg.bg, border: `1px solid ${cfg.border}`, borderRadius: "5px", color: cfg.color, fontSize: "10px", fontWeight: 700, padding: "2px 7px", flexShrink: 0 }}>
+                        {cfg.label}
+                      </span>
+                    </div>
+
+                    {/* URL */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
+                      <code style={{ color: "#7dd3fc", fontSize: "11px", fontFamily: "monospace", background: "rgba(0,0,0,0.3)", padding: "3px 8px", borderRadius: "4px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.url}</code>
+                      <CopyButton text={u.url} />
+                    </div>
+
+                    {/* Stats row */}
+                    <div style={{ display: "flex", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
+                      <span style={{ color: "#64748b", fontSize: "11px" }}>请求 <span style={{ color: "#94a3b8", fontWeight: 600 }}>{u.totalRequests}</span></span>
+                      {u.totalErrors > 0 && <span style={{ color: "#64748b", fontSize: "11px" }}>错误 <span style={{ color: "#f87171", fontWeight: 600 }}>{u.totalErrors}</span></span>}
+                      {u.consecutiveFailures > 0 && <span style={{ color: "#64748b", fontSize: "11px" }}>连续失败 <span style={{ color: "#fbbf24", fontWeight: 600 }}>{u.consecutiveFailures}</span></span>}
+                      {lastSeen && <span style={{ color: "#475569", fontSize: "11px" }}>最近在线 {lastSeen}</span>}
+                    </div>
+
+                    {/* Error message */}
+                    {u.lastErrorMsg && effectiveStatus !== "online" && (
+                      <div style={{ background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.15)", borderRadius: "5px", padding: "5px 8px", marginBottom: "10px" }}>
+                        <span style={{ color: "#f87171", fontSize: "11px" }}>{u.lastErrorMsg}</span>
+                        {lastErr && <span style={{ color: "#475569", fontSize: "10px", marginLeft: "6px" }}>{lastErr}</span>}
                       </div>
+                    )}
+
+                    {/* Test result */}
+                    {tr && !tr.testing && (
+                      <div style={{ background: tr.ok ? "rgba(74,222,128,0.07)" : "rgba(248,113,113,0.07)", border: `1px solid ${tr.ok ? "rgba(74,222,128,0.15)" : "rgba(248,113,113,0.15)"}`, borderRadius: "5px", padding: "5px 8px", marginBottom: "10px" }}>
+                        <span style={{ color: tr.ok ? "#4ade80" : "#f87171", fontSize: "11px" }}>
+                          {tr.ok ? `✓ 连通 ${tr.ms}ms` : `✗ ${tr.error?.slice(0, 80) ?? "失败"}`}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                      <button onClick={() => testUpstream(u.id)} disabled={tr?.testing}
+                        style={{ background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: "5px", color: "#60a5fa", cursor: tr?.testing ? "not-allowed" : "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px", opacity: tr?.testing ? 0.5 : 1 }}>
+                        {tr?.testing ? "检测中…" : "测试"}
+                      </button>
+                      {canWake && (
+                        <button onClick={() => wakeUpstreamNode(u.id)}
+                          style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "5px", color: "#fbbf24", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px" }}>
+                          唤醒
+                        </button>
+                      )}
+                      <button onClick={() => toggleUpstream(u.id, !u.enabled)}
+                        style={{ background: u.enabled ? "rgba(74,222,128,0.1)" : "rgba(100,116,139,0.12)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.2)" : "rgba(100,116,139,0.2)"}`, borderRadius: "5px", color: u.enabled ? "#4ade80" : "#64748b", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px" }}>
+                        {u.enabled ? "禁用" : "启用"}
+                      </button>
+                      <button onClick={() => deleteUpstream(u.id)}
+                        style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", borderRadius: "5px", color: "#f87171", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px", marginLeft: "auto" }}>
+                        删除
+                      </button>
                     </div>
                   </div>
                 );
               })}
-              <p style={{ color: "#334155", fontSize: "11px", margin: "6px 0 0" }}>
-                ⟳ 轮询策略：每次请求按顺序选取下一个启用节点，失败自动跳至下一个，全部失败则回退至本账号的 Replit 集成
-              </p>
             </div>
           )}
+
+          <p style={{ color: "#334155", fontSize: "11px", margin: "12px 0 0" }}>
+            ⟳ 仅路由至状态为「在线」的节点 · 60s 自动心跳检测 · 429→超限 / 403→月限 / 3次失败→离线 · 点击「唤醒」手动恢复
+          </p>
         </Card>
 
         {/* Usage Stats */}

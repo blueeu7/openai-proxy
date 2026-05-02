@@ -5,6 +5,7 @@ import router from "./routes";
 import proxyRouter from "./routes/proxy";
 import upstreamsRouter from "./routes/upstreams";
 import { logger } from "./lib/logger";
+import { startHealthMonitor } from "./lib/healthMonitor";
 
 const app: Express = express();
 
@@ -34,5 +35,7 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use("/api", router);
 app.use("/api/upstreams", upstreamsRouter);
 app.use("/v1", proxyRouter);
+
+startHealthMonitor(60_000);
 
 export default app;

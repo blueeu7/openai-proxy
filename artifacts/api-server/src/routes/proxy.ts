@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { loadUpstreams, type Upstream } from "../lib/upstreams";
+import { loadUpstreams, markUpstreamOnline, markUpstreamError, markUpstreamFailure, type Upstream } from "../lib/upstreams";
 import { makeCacheKey, cacheGet, cacheSet, cacheStats } from "../lib/cache";
 import { checkRateLimit } from "../lib/rateLimit";
 
@@ -134,7 +134,17 @@ async function forwardToUpstream(
       signal: AbortSignal.timeout(120_000),
     });
 
-    if (!r.ok) return false;
+    if (!r.ok) {
+      // ── Error strategy per mind-map ──────────────────────────────
+      if (r.status === 429) {
+        markUpstreamError(upstream.id, "quota_exceeded", "429 配额超限");
+      } else if (r.status === 403) {
+        markUpstreamError(upstream.id, "monthly_limit", "403 月度限制");
+      } else if (r.status >= 500) {
+        markUpstreamFailure(upstream.id, `HTTP ${r.status}`);
+      }
+      return false;
+    }
 
     if (isStream) {
       if (!r.body) return false;
@@ -142,6 +152,7 @@ async function forwardToUpstream(
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
+      res.setHeader("X-Upstream-Node", upstream.name);
       res.flushHeaders();
       const reader = r.body.getReader();
       const decoder = new TextDecoder();
@@ -164,10 +175,14 @@ async function forwardToUpstream(
         recordTokens(model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0);
       }
       if (cacheKey) cacheSet(cacheKey, data);
+      res.setHeader("X-Upstream-Node", upstream.name);
       res.json(data);
     }
+
+    markUpstreamOnline(upstream.id);
     return true;
-  } catch {
+  } catch (e: unknown) {
+    markUpstreamFailure(upstream.id, (e as Error).message ?? "network error");
     return false;
   }
 }
@@ -313,18 +328,18 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
   res.setHeader("X-Cache-Status", stream ? "STREAMING" : "MISS");
 
   try {
-    // Try enabled upstreams first (round-robin with fallback)
-    const enabledUpstreams = loadUpstreams().filter((u) => u.enabled);
-    if (enabledUpstreams.length > 0) {
-      const startIdx = rrCounter % enabledUpstreams.length;
+    // ── Upstream pool: only route to enabled + online nodes ─────────────────
+    const activeUpstreams = loadUpstreams().filter((u) => u.enabled && u.status === "online");
+    if (activeUpstreams.length > 0) {
+      const startIdx = rrCounter % activeUpstreams.length;
       rrCounter++;
-      for (let i = 0; i < enabledUpstreams.length; i++) {
-        const upstream = enabledUpstreams[(startIdx + i) % enabledUpstreams.length];
+      for (let i = 0; i < activeUpstreams.length; i++) {
+        const upstream = activeUpstreams[(startIdx + i) % activeUpstreams.length];
         // eslint-disable-next-line no-await-in-loop
         const forwarded = await forwardToUpstream(upstream, body as Record<string, unknown>, model, res, cacheKey);
         if (forwarded) return;
       }
-      // All upstreams failed — fall through to local Replit integration
+      // All active upstreams failed — fall through to local Replit integration
     }
 
     if (isAnthropic) {
