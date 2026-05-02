@@ -1,0 +1,69 @@
+第一部分: replit.nix (环境配置文件)
+
+请生成 replit.nix 文件的内容。此文件必须配置 Nix 环境，以提供 FastAPI 应用所需的所有系统级依赖，特别是 redis 服务。
+Nix
+{ pkgs }: {
+  deps = [
+    pkgs.python311Full
+    pkgs.replit.prybar-python311
+    pkgs.poetry
+    pkgs.redis  # 关键：添加 Redis 服务
+  ];
+  environment.REPLIT_POETRY_VERSION = "1.7.1";
+  
+  # 关键：定义启动命令，同时启动 Redis 服务和 FastAPI 应用
+  run = ''
+    redis-server --daemonize yes
+    poetry run uvicorn main:app --host 0.0.0.0 --port 8080
+  '';
+}
+第二部分: pyproject.toml (Python 依赖文件)
+
+请生成 pyproject.toml 文件的内容。此文件需要包含 FastAPI、Uvicorn、Redis Python 客户端以及用于加载环境变量的库。
+Toml
+[tool.poetry]
+name = "openai-gateway"
+version = "0.1.0"
+description = "Enterprise-grade OpenAI Gateway on Replit"
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+redis = "^5.0.1"
+python-dotenv = "^1.0.0"
+requests = "^2.31.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+第三部分: main.py (核心应用逻辑)
+
+请生成 main.py 文件的内容。这是项目的核心，必须实现以下所有功能：
+动态密钥管理与负载均衡:
+从环境变量 OPENAI_API_KEYS (一个用逗号分隔的字符串) 中读取多个 OpenAI API 密钥。
+使用轮询 (Round-Robin) 算法，为每个进来的请求分配一个不同的密钥。
+需要一个线程安全的方式来管理密钥的轮询索引。
+Redis 缓存:
+对于 /v1/chat/completions 接口的 POST 请求，如果 stream=False，则启用缓存。
+使用请求体中的 model 和 messages 内容生成一个唯一的哈希值作为缓存键 (Cache Key)。
+在处理请求前，先检查 Redis 中是否存在此缓存键。如果存在，直接返回缓存的响应，并在响应头中添加 X-Cache-Status: HIT。
+如果缓存未命中，则正常请求 OpenAI API，成功后将响应体存入 Redis，并设置 60 分钟的过期时间 (TTL)。在响应头中添加 X-Cache-Status: MISS。
+速率限制:
+对每个来源 IP 地址实现速率限制：每分钟最多 20 次请求。
+使用 Redis 的滑动窗口算法来实现。如果请求超过限制，返回 HTTP 429 错误，并附带提示信息。
+结构化日志:
+对于每一个请求，都在控制台打印一条 JSON 格式的日志。
+日志需包含以下字段：timestamp, client_ip, method, path, status_code, latency_ms, cache_status, key_used (使用的密钥的最后四位), prompt_tokens, completion_tokens, total_tokens。
+Token用量信息需要从 OpenAI 的响应体中解析。
+代理核心逻辑:
+创建一个 POST /v1/{path:path} 的路由来捕获所有 OpenAI API 请求。
+从请求中获取头部和请求体，替换 Authorization 头部为轮询选中的 API 密钥。
+将请求转发至 https://api.openai.com。
+支持流式 (stream=True) 和非流式响应。
+最终代码要求:
+代码结构清晰，有适当的函数划分（例如 get_api_key(), get_redis_client() 等）。
+添加详细的注释，解释每个关键部分的作用。
+包含完整的异常处理（如 Redis 连接失败、OpenAI 请求失败等）。
+在文件顶部，明确指出需要用户创建一个 .env 文件来存储 OPENAI_API_KEYS。

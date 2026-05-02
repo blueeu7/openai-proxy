@@ -228,6 +228,7 @@ export default function App() {
   const [upstreamAdding, setUpstreamAdding] = useState(false);
   const [upstreamFormOpen, setUpstreamFormOpen] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, UpstreamTestResult>>({});
+  const [cacheSize, setCacheSize] = useState<number | null>(null);
   const baseUrl = window.location.origin;
 
   const fetchUsage = useCallback(() => {
@@ -249,6 +250,13 @@ export default function App() {
     fetch(`${baseUrl}/api/upstreams`)
       .then((r) => r.json())
       .then((data: UpstreamInfo[]) => setUpstreams(data))
+      .catch(() => {});
+  }, [baseUrl]);
+
+  const fetchCacheStats = useCallback(() => {
+    fetch(`${baseUrl}/v1/cache-stats`)
+      .then((r) => r.json())
+      .then((d: { size: number }) => setCacheSize(d.size))
       .catch(() => {});
   }, [baseUrl]);
 
@@ -296,10 +304,11 @@ export default function App() {
     fetchUsage();
     fetchQuotaStatus();
     fetchUpstreams();
-    const interval = setInterval(fetchUsage, 15000);
+    fetchCacheStats();
+    const interval = setInterval(() => { fetchUsage(); fetchCacheStats(); }, 15000);
     const quotaInterval = setInterval(fetchQuotaStatus, 60000);
     return () => { clearInterval(interval); clearInterval(quotaInterval); };
-  }, [baseUrl, fetchUsage, fetchQuotaStatus, fetchUpstreams]);
+  }, [baseUrl, fetchUsage, fetchQuotaStatus, fetchUpstreams, fetchCacheStats]);
 
   const activeModels = usageData
     ? Object.entries(usageData.byModel).filter(([, s]) => s.requests > 0).sort((a, b) => b[1].requests - a[1].requests)
@@ -631,9 +640,20 @@ export default function App() {
                 </div>
               )}
 
-              <p style={{ color: "#334155", fontSize: "11px", marginTop: "12px", marginBottom: 0 }}>
-                ⚠️ 统计数据为本次进程内追踪，服务重启后归零。每 15 秒自动刷新。
-              </p>
+              <div style={{ display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap", alignItems: "center" }}>
+                <p style={{ color: "#334155", fontSize: "11px", margin: 0 }}>
+                  ⚠️ 统计数据为本次进程内追踪，服务重启后归零。每 15 秒自动刷新。
+                </p>
+                {cacheSize !== null && (
+                  <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px", background: cacheSize > 0 ? "rgba(99,102,241,0.12)" : "rgba(0,0,0,0.15)", border: `1px solid ${cacheSize > 0 ? "rgba(99,102,241,0.25)" : "rgba(255,255,255,0.07)"}`, borderRadius: "6px", padding: "3px 10px" }}>
+                    <span style={{ fontSize: "13px" }}>💾</span>
+                    <span style={{ color: cacheSize > 0 ? "#a5b4fc" : "#475569", fontSize: "11px", fontWeight: 600 }}>
+                      响应缓存 {cacheSize} 条
+                    </span>
+                    <span style={{ color: "#334155", fontSize: "11px" }}>· TTL 60min · 最多 20 req/min/IP</span>
+                  </span>
+                )}
+              </div>
             </>
           ) : (
             <div style={{ display: "flex", gap: "10px" }}>

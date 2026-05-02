@@ -2,6 +2,8 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { loadUpstreams, type Upstream } from "../lib/upstreams";
+import { makeCacheKey, cacheGet, cacheSet, cacheStats } from "../lib/cache";
+import { checkRateLimit } from "../lib/rateLimit";
 
 const router: IRouter = Router();
 
@@ -118,6 +120,7 @@ async function forwardToUpstream(
   body: Record<string, unknown>,
   model: string,
   res: Response,
+  cacheKey: string | null = null,
 ): Promise<boolean> {
   const isStream = !!body.stream;
   try {
@@ -160,6 +163,7 @@ async function forwardToUpstream(
       if (data.usage) {
         recordTokens(model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0);
       }
+      if (cacheKey) cacheSet(cacheKey, data);
       res.json(data);
     }
     return true;
@@ -274,10 +278,39 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
 
   const { model, messages, stream } = body;
 
+  // ── Rate limiting ──────────────────────────────────────────────────────────
+  const clientIp = ((req.ip ?? req.socket.remoteAddress ?? "unknown") as string).replace("::ffff:", "");
+  const rl = checkRateLimit(clientIp);
+  if (!rl.allowed) {
+    res.status(429).json({
+      error: {
+        message: `Rate limit exceeded. Retry in ${Math.ceil(rl.resetMs / 1000)}s (max ${20} req/min per IP).`,
+        type: "rate_limit_error",
+        code: "rate_limit_exceeded",
+      },
+    });
+    return;
+  }
+  res.setHeader("X-RateLimit-Remaining", String(rl.remaining));
+
   const isAnthropic = model.startsWith("claude");
   const isOpenAI = model.startsWith("gpt") || model.startsWith("o");
 
   recordRequest(model);
+
+  // ── Response cache (non-streaming only) ───────────────────────────────────
+  let cacheKey: string | null = null;
+  if (!stream) {
+    cacheKey = makeCacheKey(model, messages);
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      res.setHeader("X-Cache-Status", "HIT");
+      req.log.info({ cache: "HIT", model, ip: clientIp }, "cache hit");
+      res.json(cached);
+      return;
+    }
+  }
+  res.setHeader("X-Cache-Status", stream ? "STREAMING" : "MISS");
 
   try {
     // Try enabled upstreams first (round-robin with fallback)
@@ -288,7 +321,7 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
       for (let i = 0; i < enabledUpstreams.length; i++) {
         const upstream = enabledUpstreams[(startIdx + i) % enabledUpstreams.length];
         // eslint-disable-next-line no-await-in-loop
-        const forwarded = await forwardToUpstream(upstream, body as Record<string, unknown>, model, res);
+        const forwarded = await forwardToUpstream(upstream, body as Record<string, unknown>, model, res, cacheKey);
         if (forwarded) return;
       }
       // All upstreams failed — fall through to local Replit integration
@@ -373,7 +406,7 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
         recordTokens(model, response.usage.input_tokens, response.usage.output_tokens);
 
         const textContent = response.content.find((b) => b.type === "text");
-        res.json({
+        const respJson = {
           id: `chatcmpl-${Date.now()}`,
           object: "chat.completion",
           created: Math.floor(Date.now() / 1000),
@@ -390,7 +423,10 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
             completion_tokens: response.usage.output_tokens,
             total_tokens: response.usage.input_tokens + response.usage.output_tokens,
           },
-        });
+        };
+        if (cacheKey) cacheSet(cacheKey, respJson);
+        req.log.info({ model, ip: clientIp, in: response.usage.input_tokens, out: response.usage.output_tokens, via: "local-anthropic" }, "completion");
+        res.json(respJson);
       }
     } else if (isOpenAI) {
       if (stream) {
@@ -441,8 +477,10 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
 
         if (response.usage) {
           recordTokens(model, response.usage.prompt_tokens, response.usage.completion_tokens);
+          req.log.info({ model, ip: clientIp, in: response.usage.prompt_tokens, out: response.usage.completion_tokens, via: "local-openai" }, "completion");
         }
 
+        if (cacheKey) cacheSet(cacheKey, response);
         res.json(response);
       }
     } else {
@@ -469,6 +507,10 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
       res.end();
     }
   }
+});
+
+router.get("/cache-stats", (_req: Request, res: Response) => {
+  res.json(cacheStats());
 });
 
 export default router;
