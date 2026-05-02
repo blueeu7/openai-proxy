@@ -4,6 +4,8 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import proxyRouter from "./routes/proxy";
 import upstreamsRouter from "./routes/upstreams";
+import deletionLogRouter from "./routes/deletionLog";
+import settingsRouter from "./routes/settings";
 import { logger } from "./lib/logger";
 import { startHealthMonitor } from "./lib/healthMonitor";
 
@@ -34,6 +36,8 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 app.use("/api", router);
 app.use("/api/upstreams", upstreamsRouter);
+app.use("/api/deletion-log", deletionLogRouter);
+app.use("/api/settings", settingsRouter);
 app.use("/v1", proxyRouter);
 
 startHealthMonitor(60_000);

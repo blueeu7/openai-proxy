@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
+import { loadSettings } from "./settings";
 
 export type NodeStatus = "online" | "offline" | "quota_exceeded" | "monthly_limit" | "banned";
 
@@ -11,6 +12,7 @@ export interface Upstream {
   apiKey: string;
   enabled: boolean;
   status: NodeStatus;
+  weight: number;
   createdAt: number;
   lastSeenAt: number | null;
   lastErrorAt: number | null;
@@ -35,6 +37,7 @@ function migrate(raw: Partial<Upstream>): Upstream {
     apiKey: raw.apiKey ?? "",
     enabled: raw.enabled ?? true,
     status: raw.status ?? "online",
+    weight: raw.weight ?? 1,
     createdAt: raw.createdAt ?? Date.now(),
     lastSeenAt: raw.lastSeenAt ?? null,
     lastErrorAt: raw.lastErrorAt ?? null,
@@ -70,9 +73,9 @@ function patchOne(id: string, fn: (u: Upstream) => void): Upstream | null {
   return list[idx];
 }
 
-export function addUpstream(name: string, url: string, apiKey: string, enabled = true): Upstream {
+export function addUpstream(name: string, url: string, apiKey: string, enabled = true, weight = 1): Upstream {
   const list = loadUpstreams();
-  const upstream = migrate({ id: randomUUID(), name, url, apiKey, enabled, createdAt: Date.now() });
+  const upstream = migrate({ id: randomUUID(), name, url, apiKey, enabled, weight, createdAt: Date.now() });
   list.push(upstream);
   saveUpstreams(list);
   return upstream;
@@ -80,13 +83,14 @@ export function addUpstream(name: string, url: string, apiKey: string, enabled =
 
 export function updateUpstream(
   id: string,
-  patch: Partial<Pick<Upstream, "name" | "url" | "apiKey" | "enabled">>,
+  patch: Partial<Pick<Upstream, "name" | "url" | "apiKey" | "enabled" | "weight">>,
 ): Upstream | null {
   return patchOne(id, (u) => {
     if (patch.name !== undefined) u.name = patch.name;
     if (patch.url !== undefined) u.url = patch.url.replace(/\/$/, "");
     if (patch.apiKey !== undefined && patch.apiKey !== "") u.apiKey = patch.apiKey;
     if (patch.enabled !== undefined) u.enabled = patch.enabled;
+    if (patch.weight !== undefined) u.weight = Math.max(1, Math.min(10, patch.weight));
   });
 }
 
@@ -126,12 +130,13 @@ export function markUpstreamError(id: string, status: NodeStatus, msg: string): 
 }
 
 export function markUpstreamFailure(id: string, msg: string): void {
+  const { maxConsecutiveFailures } = loadSettings();
   patchOne(id, (u) => {
     u.consecutiveFailures++;
     u.lastErrorAt = Date.now();
     u.lastErrorMsg = msg;
     u.totalErrors++;
-    if (u.consecutiveFailures >= 3) u.status = "offline";
+    if (u.consecutiveFailures >= maxConsecutiveFailures) u.status = "offline";
   });
 }
 

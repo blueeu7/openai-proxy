@@ -12,6 +12,7 @@ import {
   clusterSummary,
   type Upstream,
 } from "../lib/upstreams";
+import { addDeletionRecord } from "../lib/deletionLog";
 
 const router = Router();
 
@@ -28,17 +29,18 @@ router.get("/cluster-summary", (_req: Request, res: Response) => {
 });
 
 router.post("/", (req: Request, res: Response) => {
-  const { name, url, apiKey, enabled } = req.body as {
+  const { name, url, apiKey, enabled, weight } = req.body as {
     name?: string;
     url?: string;
     apiKey?: string;
     enabled?: boolean;
+    weight?: number;
   };
   if (!name || !url || !apiKey) {
     res.status(400).json({ error: "name, url, apiKey are required" });
     return;
   }
-  const upstream = addUpstream(name, url, apiKey, enabled ?? true);
+  const upstream = addUpstream(name, url, apiKey, enabled ?? true, weight ?? 1);
   res.status(201).json(maskKey(upstream));
 });
 
@@ -57,10 +59,20 @@ router.patch("/:id", (req: Request, res: Response) => {
 });
 
 router.delete("/:id", (req: Request, res: Response) => {
+  const all = loadUpstreams();
+  const upstream = all.find((u) => u.id === req.params.id);
   const ok = removeUpstream(req.params.id);
   if (!ok) {
     res.status(404).json({ error: "Not found" });
     return;
+  }
+  if (upstream) {
+    addDeletionRecord({
+      nodeId: upstream.id,
+      name: upstream.name,
+      url: upstream.url,
+      reason: "manual",
+    });
   }
   res.json({ ok: true });
 });

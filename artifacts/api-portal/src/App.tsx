@@ -116,6 +116,7 @@ interface UpstreamInfo {
   apiKey: string;
   enabled: boolean;
   status: NodeStatus;
+  weight: number;
   createdAt: number;
   lastSeenAt: number | null;
   lastErrorAt: number | null;
@@ -131,6 +132,46 @@ interface UpstreamTestResult {
   error?: string;
   testing?: boolean;
 }
+
+interface DeletionRecord {
+  id: string;
+  nodeId: string;
+  name: string;
+  url: string;
+  reason: "manual" | "quota_exceeded" | "monthly_limit" | "consecutive_errors" | "auth_failure";
+  deletedAt: number;
+  errorMsg?: string;
+}
+
+interface AppSettings {
+  maxConsecutiveFailures: number;
+  healthIntervalMs: number;
+  cacheEnabled: boolean;
+  cacheTtlMs: number;
+  rateLimitEnabled: boolean;
+  rateLimitPerMinute: number;
+  retryOnError: boolean;
+  requestTimeoutMs: number;
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  maxConsecutiveFailures: 3,
+  healthIntervalMs: 60_000,
+  cacheEnabled: true,
+  cacheTtlMs: 3_600_000,
+  rateLimitEnabled: true,
+  rateLimitPerMinute: 20,
+  retryOnError: true,
+  requestTimeoutMs: 120_000,
+};
+
+const DELETION_REASON_LABELS: Record<DeletionRecord["reason"], string> = {
+  manual: "手动删除",
+  quota_exceeded: "429 配额超限",
+  monthly_limit: "403 月度限制",
+  consecutive_errors: "连续错误下线",
+  auth_failure: "认证失败",
+};
 
 const STATUS_CFG: Record<NodeStatus, { label: string; color: string; bg: string; border: string }> = {
   online:         { label: "在线",    color: "#4ade80", bg: "rgba(74,222,128,0.1)",   border: "rgba(74,222,128,0.25)" },
@@ -241,13 +282,19 @@ export default function App() {
   const [quotaStatus, setQuotaStatus] = useState<QuotaStatus | null>(null);
   const [quotaChecking, setQuotaChecking] = useState(false);
   const [upstreams, setUpstreams] = useState<UpstreamInfo[]>([]);
-  const [upstreamForm, setUpstreamForm] = useState({ name: "", url: "", apiKey: "" });
+  const [upstreamForm, setUpstreamForm] = useState({ name: "", url: "", apiKey: "", weight: 1 });
   const [upstreamAdding, setUpstreamAdding] = useState(false);
   const [upstreamFormOpen, setUpstreamFormOpen] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, UpstreamTestResult>>({});
   const [cacheSize, setCacheSize] = useState<number | null>(null);
-  const [nodeTab, setNodeTab] = useState<"nodes" | "cluster" | "deploy">("nodes");
+  const [nodeTab, setNodeTab] = useState<"nodes" | "cluster" | "deletions" | "deploy" | "settings">("nodes");
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
+  const [deletionLog, setDeletionLog] = useState<DeletionRecord[]>([]);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settingsForm, setSettingsForm] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [editingNode, setEditingNode] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", url: "", apiKey: "", weight: 1 });
   const baseUrl = window.location.origin;
 
   const fetchUsage = useCallback(() => {
@@ -279,6 +326,20 @@ export default function App() {
       .catch(() => {});
   }, [baseUrl]);
 
+  const fetchDeletionLog = useCallback(() => {
+    fetch(`${baseUrl}/api/deletion-log`)
+      .then((r) => r.json())
+      .then((data: DeletionRecord[]) => setDeletionLog(data))
+      .catch(() => {});
+  }, [baseUrl]);
+
+  const fetchSettings = useCallback(() => {
+    fetch(`${baseUrl}/api/settings`)
+      .then((r) => r.json())
+      .then((data: AppSettings) => { setSettings(data); setSettingsForm(data); })
+      .catch(() => {});
+  }, [baseUrl]);
+
   const addUpstream = async () => {
     if (!upstreamForm.name || !upstreamForm.url || !upstreamForm.apiKey) return;
     setUpstreamAdding(true);
@@ -288,7 +349,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(upstreamForm),
       });
-      setUpstreamForm({ name: "", url: "", apiKey: "" });
+      setUpstreamForm({ name: "", url: "", apiKey: "", weight: 1 });
       setUpstreamFormOpen(false);
       fetchUpstreams();
     } finally {
@@ -329,16 +390,54 @@ export default function App() {
     fetchUpstreams();
   };
 
+  const clearDeletionLogFn = async () => {
+    await fetch(`${baseUrl}/api/deletion-log`, { method: "DELETE" });
+    fetchDeletionLog();
+  };
+
+  const saveSettingsFn = async () => {
+    setSettingsSaving(true);
+    try {
+      const r = await fetch(`${baseUrl}/api/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settingsForm),
+      });
+      const data = (await r.json()) as AppSettings;
+      setSettings(data);
+      setSettingsForm(data);
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const startEditNode = (u: UpstreamInfo) => {
+    setEditingNode(u.id);
+    setEditForm({ name: u.name, url: u.url, apiKey: "", weight: u.weight ?? 1 });
+  };
+
+  const saveEditNode = async (id: string) => {
+    await fetch(`${baseUrl}/api/upstreams/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(editForm),
+    });
+    setEditingNode(null);
+    fetchUpstreams();
+  };
+
   useEffect(() => {
     fetch(`${baseUrl}/api/healthz`).then((r) => setOnline(r.ok)).catch(() => setOnline(false));
     fetchUsage();
     fetchQuotaStatus();
     fetchUpstreams();
     fetchCacheStats();
-    const interval = setInterval(() => { fetchUsage(); fetchCacheStats(); }, 15000);
+    fetchDeletionLog();
+    fetchSettings();
+    const interval = setInterval(() => { fetchUsage(); fetchCacheStats(); fetchUpstreams(); }, 15000);
     const quotaInterval = setInterval(fetchQuotaStatus, 60000);
     return () => { clearInterval(interval); clearInterval(quotaInterval); };
-  }, [baseUrl, fetchUsage, fetchQuotaStatus, fetchUpstreams, fetchCacheStats]);
+  }, [baseUrl, fetchUsage, fetchQuotaStatus, fetchUpstreams, fetchCacheStats, fetchDeletionLog, fetchSettings]);
 
   const activeModels = usageData
     ? Object.entries(usageData.byModel).filter(([, s]) => s.requests > 0).sort((a, b) => b[1].requests - a[1].requests)
@@ -455,19 +554,25 @@ export default function App() {
         {/* Node Management Panel */}
         <Card style={{ padding: 0 }}>
           {/* ── Tab Bar ─────────────────────────────────────────────── */}
-          <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "0 20px" }}>
-            {(["nodes", "cluster", "deploy"] as const).map((tab) => (
-              <button key={tab} onClick={() => setNodeTab(tab)} style={{
-                background: "transparent", border: "none",
-                borderBottom: nodeTab === tab ? "2px solid #3b82f6" : "2px solid transparent",
-                color: nodeTab === tab ? "#60a5fa" : "#475569",
-                cursor: "pointer", fontSize: "12px",
-                fontWeight: nodeTab === tab ? 600 : 400,
-                padding: "11px 14px", transition: "color 0.15s",
-              }}>
-                {tab === "nodes" ? "节点管理" : tab === "cluster" ? "集群" : "部署代码"}
-              </button>
-            ))}
+          <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "0 20px", overflowX: "auto" }}>
+            {(["nodes", "cluster", "deletions", "deploy", "settings"] as const).map((tab) => {
+              const labels: Record<string, string> = { nodes: "节点管理", cluster: "集群", deletions: "删除记录", deploy: "部署代码", settings: "设置" };
+              return (
+                <button key={tab} onClick={() => setNodeTab(tab)} style={{
+                  background: "transparent", border: "none", whiteSpace: "nowrap",
+                  borderBottom: nodeTab === tab ? "2px solid #3b82f6" : "2px solid transparent",
+                  color: nodeTab === tab ? "#60a5fa" : "#475569",
+                  cursor: "pointer", fontSize: "12px",
+                  fontWeight: nodeTab === tab ? 600 : 400,
+                  padding: "11px 14px", transition: "color 0.15s",
+                }}>
+                  {labels[tab]}
+                  {tab === "deletions" && deletionLog.length > 0 && (
+                    <span style={{ background: "#ef4444", borderRadius: "8px", color: "white", fontSize: "9px", fontWeight: 700, marginLeft: "4px", padding: "1px 5px", verticalAlign: "middle" }}>{deletionLog.length}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           <div style={{ padding: "20px 24px" }}>
@@ -556,6 +661,12 @@ export default function App() {
                       <input placeholder="API Key（PROXY_API_KEY，默认 123）" value={upstreamForm.apiKey}
                         onChange={(e) => setUpstreamForm((f) => ({ ...f, apiKey: e.target.value }))}
                         style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "12px", padding: "7px 11px", outline: "none", fontFamily: "monospace" }} />
+                      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: "2px" }}>
+                        <span style={{ color: "#475569", fontSize: "10px", textAlign: "center" }}>权重</span>
+                        <input type="number" min={1} max={10} value={upstreamForm.weight}
+                          onChange={(e) => setUpstreamForm((f) => ({ ...f, weight: Math.max(1, Math.min(10, Number(e.target.value))) }))}
+                          style={{ width: "52px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "12px", padding: "7px 8px", outline: "none", textAlign: "center" }} />
+                      </div>
                       <button onClick={addUpstream}
                         disabled={upstreamAdding || !upstreamForm.name || !upstreamForm.url || !upstreamForm.apiKey}
                         style={{ background: upstreamAdding ? "rgba(99,102,241,0.3)" : "rgba(99,102,241,0.85)", border: "none", borderRadius: "7px", color: "white", cursor: upstreamAdding ? "not-allowed" : "pointer", fontSize: "12px", fontWeight: 600, padding: "7px 16px", flexShrink: 0 }}>
@@ -663,11 +774,51 @@ export default function App() {
                           </div>
                         )}
 
+                        {/* Edit form */}
+                        {editingNode === u.id && (
+                          <div style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: "7px", padding: "10px 12px", marginBottom: "8px" }}>
+                            <p style={{ color: "#93c5fd", fontSize: "11px", fontWeight: 600, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: "0.06em" }}>编辑节点</p>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                              <input placeholder="节点名称" value={editForm.name}
+                                onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                                style={{ background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none" }} />
+                              <input placeholder="部署地址" value={editForm.url}
+                                onChange={(e) => setEditForm((f) => ({ ...f, url: e.target.value }))}
+                                style={{ background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none" }} />
+                              <div style={{ display: "flex", gap: "6px" }}>
+                                <input placeholder="新 API Key（留空保持不变）" value={editForm.apiKey}
+                                  onChange={(e) => setEditForm((f) => ({ ...f, apiKey: e.target.value }))}
+                                  style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none", fontFamily: "monospace" }} />
+                                <div style={{ display: "flex", flexDirection: "column", gap: "2px", justifyContent: "center" }}>
+                                  <span style={{ color: "#475569", fontSize: "10px", textAlign: "center" }}>权重</span>
+                                  <input type="number" min={1} max={10} value={editForm.weight}
+                                    onChange={(e) => setEditForm((f) => ({ ...f, weight: Math.max(1, Math.min(10, Number(e.target.value))) }))}
+                                    style={{ width: "52px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 8px", outline: "none", textAlign: "center" }} />
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", gap: "6px" }}>
+                                <button onClick={() => void saveEditNode(u.id)}
+                                  style={{ background: "rgba(59,130,246,0.7)", border: "none", borderRadius: "5px", color: "white", cursor: "pointer", fontSize: "11px", fontWeight: 600, padding: "5px 14px" }}>
+                                  保存
+                                </button>
+                                <button onClick={() => setEditingNode(null)}
+                                  style={{ background: "rgba(100,116,139,0.2)", border: "1px solid rgba(100,116,139,0.3)", borderRadius: "5px", color: "#94a3b8", cursor: "pointer", fontSize: "11px", padding: "5px 14px" }}>
+                                  取消
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Actions */}
                         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                           <button onClick={() => testUpstream(u.id)} disabled={tr?.testing}
                             style={{ background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: "5px", color: "#60a5fa", cursor: tr?.testing ? "not-allowed" : "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px", opacity: tr?.testing ? 0.5 : 1 }}>
                             {tr?.testing ? "检测中…" : "测试连通性"}
+                          </button>
+                          <button onClick={() => { editingNode === u.id ? setEditingNode(null) : startEditNode(u); }}
+                            style={{ background: editingNode === u.id ? "rgba(99,102,241,0.2)" : "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: "5px", color: "#a78bfa", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px" }}>
+                            {editingNode === u.id ? "收起" : "编辑"}
                           </button>
                           {canWake && (
                             <button onClick={() => { void wakeUpstreamNode(u.id); setExpandedNode(null); }}
@@ -679,7 +830,7 @@ export default function App() {
                             style={{ background: u.enabled ? "rgba(74,222,128,0.1)" : "rgba(100,116,139,0.12)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.2)" : "rgba(100,116,139,0.2)"}`, borderRadius: "5px", color: u.enabled ? "#4ade80" : "#64748b", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px" }}>
                             {u.enabled ? "禁用" : "启用"}
                           </button>
-                          <button onClick={() => { void deleteUpstream(u.id); setExpandedNode(null); }}
+                          <button onClick={() => { void deleteUpstream(u.id); setExpandedNode(null); fetchDeletionLog(); }}
                             style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", borderRadius: "5px", color: "#f87171", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px", marginLeft: "auto" }}>
                             删除节点
                           </button>
@@ -733,12 +884,35 @@ export default function App() {
                         {g.nodes.map(n => (
                           <div key={n.id} style={{ background: "rgba(0,0,0,0.2)", borderRadius: "5px", padding: "3px 10px", display: "flex", alignItems: "center", gap: "6px" }}>
                             <span style={{ color: "#94a3b8", fontSize: "11px" }}>{n.name}</span>
+                            <span style={{ color: "#475569", fontSize: "10px" }}>W{n.weight ?? 1}</span>
                             <span style={{ color: "#334155", fontSize: "10px" }}>{n.totalRequests}次</span>
                           </div>
                         ))}
                       </div>
                     </div>
                   ))}
+
+                  {/* ── 规则管理 ─────────────────────────────────────────── */}
+                  <div style={{ background: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "8px", padding: "14px 16px" }}>
+                    <p style={{ color: "#94a3b8", fontSize: "12px", fontWeight: 600, margin: "0 0 10px", textTransform: "uppercase", letterSpacing: "0.07em" }}>⚖️ 规则管理</p>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "7px" }}>
+                      {[
+                        { icon: "⚖️", label: "路由策略",     value: "加权轮询" },
+                        { icon: "💓", label: "心跳检测",     value: `每 ${settings ? Math.round(settings.healthIntervalMs / 1000) : 60}s` },
+                        { icon: "🔄", label: "故障自动转移", value: "已启用" },
+                        { icon: "❌", label: "最大连续失败", value: `${settings?.maxConsecutiveFailures ?? 3} 次` },
+                        { icon: "💾", label: "响应缓存",     value: settings?.cacheEnabled ? `${Math.round((settings.cacheTtlMs ?? 3_600_000) / 60_000)}min` : "已禁用" },
+                        { icon: "🚦", label: "IP 限流",      value: settings?.rateLimitEnabled ? `${settings.rateLimitPerMinute ?? 20} 次/分钟` : "已禁用" },
+                        { icon: "🔁", label: "失败重试",     value: settings?.retryOnError !== false ? "已启用" : "已禁用" },
+                        { icon: "⏱️", label: "请求超时",     value: `${Math.round((settings?.requestTimeoutMs ?? 120_000) / 1000)}s` },
+                      ].map(({ icon, label, value }) => (
+                        <div key={label} style={{ background: "rgba(0,0,0,0.18)", borderRadius: "6px", padding: "7px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ color: "#64748b", fontSize: "11px" }}>{icon} {label}</span>
+                          <span style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600 }}>{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               );
             })()}
@@ -791,6 +965,145 @@ response = client.chat.completions.create(
                       <CopyButton text={`from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${baseUrl}/v1",\n    api_key="your-proxy-api-key",\n)\n\nresponse = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)`} />
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ══════════════ 删除记录 TAB ══════════════ */}
+            {nodeTab === "deletions" && (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+                  <p style={{ color: "#94a3b8", fontSize: "13px", fontWeight: 600, margin: 0 }}>
+                    删除记录（共 {deletionLog.length} 条）
+                  </p>
+                  {deletionLog.length > 0 && (
+                    <button onClick={() => void clearDeletionLogFn()}
+                      style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", borderRadius: "5px", color: "#f87171", cursor: "pointer", fontSize: "11px", padding: "4px 12px" }}>
+                      清空记录
+                    </button>
+                  )}
+                </div>
+                {deletionLog.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "40px 0" }}>
+                    <p style={{ fontSize: "28px", margin: "0 0 8px" }}>🗑️</p>
+                    <p style={{ color: "#475569", fontSize: "13px", margin: 0 }}>暂无删除记录</p>
+                    <p style={{ color: "#334155", fontSize: "11px", margin: "6px 0 0" }}>删除节点后记录将在这里保存</p>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {deletionLog.map(r => (
+                      <div key={r.id} style={{ background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "8px", padding: "12px 14px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+                          <span style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: 600 }}>{r.name}</span>
+                          <span style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "4px", color: "#f87171", fontSize: "10px", padding: "2px 6px" }}>
+                            {DELETION_REASON_LABELS[r.reason]}
+                          </span>
+                          <span style={{ marginLeft: "auto", color: "#475569", fontSize: "11px" }}>
+                            {new Date(r.deletedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </div>
+                        <code style={{ color: "#7dd3fc", fontSize: "11px", display: "block", wordBreak: "break-all", marginBottom: r.errorMsg ? "4px" : 0 }}>{r.url}</code>
+                        {r.errorMsg && <p style={{ color: "#94a3b8", fontSize: "11px", margin: "4px 0 0" }}>{r.errorMsg}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ══════════════ 设置 TAB ══════════════ */}
+            {nodeTab === "settings" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+
+                {/* ── 节点健康 ─────────────────────────────────────── */}
+                <div style={{ background: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", padding: "14px 16px" }}>
+                  <p style={{ color: "#94a3b8", fontSize: "12px", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.07em" }}>🏥 节点健康</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 4px" }}>心跳检测间隔（秒）</p>
+                      <input type="number" min={10} max={3600} value={Math.round(settingsForm.healthIntervalMs / 1000)}
+                        onChange={(e) => setSettingsForm(f => ({ ...f, healthIntervalMs: Number(e.target.value) * 1000 }))}
+                        style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none", boxSizing: "border-box" }} />
+                      <p style={{ color: "#334155", fontSize: "10px", margin: "3px 0 0" }}>重启后生效</p>
+                    </div>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 4px" }}>最大连续失败次数</p>
+                      <input type="number" min={1} max={20} value={settingsForm.maxConsecutiveFailures}
+                        onChange={(e) => setSettingsForm(f => ({ ...f, maxConsecutiveFailures: Number(e.target.value) }))}
+                        style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none", boxSizing: "border-box" }} />
+                    </div>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 4px" }}>请求超时（秒）</p>
+                      <input type="number" min={5} max={600} value={Math.round(settingsForm.requestTimeoutMs / 1000)}
+                        onChange={(e) => setSettingsForm(f => ({ ...f, requestTimeoutMs: Number(e.target.value) * 1000 }))}
+                        style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none", boxSizing: "border-box" }} />
+                    </div>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 8px" }}>失败自动重试</p>
+                      <button onClick={() => setSettingsForm(f => ({ ...f, retryOnError: !f.retryOnError }))}
+                        style={{ display: "flex", alignItems: "center", gap: "8px", background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+                        <div style={{ width: "36px", height: "20px", borderRadius: "10px", background: settingsForm.retryOnError ? "#3b82f6" : "#334155", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+                          <div style={{ width: "14px", height: "14px", borderRadius: "50%", background: "white", position: "absolute", top: "3px", left: settingsForm.retryOnError ? "19px" : "3px", transition: "left 0.2s" }} />
+                        </div>
+                        <span style={{ color: "#94a3b8", fontSize: "12px" }}>{settingsForm.retryOnError ? "已启用" : "已禁用"}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── 响应缓存 ─────────────────────────────────────── */}
+                <div style={{ background: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", padding: "14px 16px" }}>
+                  <p style={{ color: "#94a3b8", fontSize: "12px", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.07em" }}>💾 响应缓存</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 8px" }}>缓存功能</p>
+                      <button onClick={() => setSettingsForm(f => ({ ...f, cacheEnabled: !f.cacheEnabled }))}
+                        style={{ display: "flex", alignItems: "center", gap: "8px", background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+                        <div style={{ width: "36px", height: "20px", borderRadius: "10px", background: settingsForm.cacheEnabled ? "#3b82f6" : "#334155", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+                          <div style={{ width: "14px", height: "14px", borderRadius: "50%", background: "white", position: "absolute", top: "3px", left: settingsForm.cacheEnabled ? "19px" : "3px", transition: "left 0.2s" }} />
+                        </div>
+                        <span style={{ color: "#94a3b8", fontSize: "12px" }}>{settingsForm.cacheEnabled ? "已启用" : "已禁用"}</span>
+                      </button>
+                    </div>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 4px" }}>缓存有效期（分钟）</p>
+                      <input type="number" min={1} max={10080} value={Math.round(settingsForm.cacheTtlMs / 60_000)}
+                        onChange={(e) => setSettingsForm(f => ({ ...f, cacheTtlMs: Number(e.target.value) * 60_000 }))}
+                        style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none", boxSizing: "border-box" }} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── 请求限流 ─────────────────────────────────────── */}
+                <div style={{ background: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", padding: "14px 16px" }}>
+                  <p style={{ color: "#94a3b8", fontSize: "12px", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.07em" }}>🚦 请求限流</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 8px" }}>限流功能</p>
+                      <button onClick={() => setSettingsForm(f => ({ ...f, rateLimitEnabled: !f.rateLimitEnabled }))}
+                        style={{ display: "flex", alignItems: "center", gap: "8px", background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+                        <div style={{ width: "36px", height: "20px", borderRadius: "10px", background: settingsForm.rateLimitEnabled ? "#3b82f6" : "#334155", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+                          <div style={{ width: "14px", height: "14px", borderRadius: "50%", background: "white", position: "absolute", top: "3px", left: settingsForm.rateLimitEnabled ? "19px" : "3px", transition: "left 0.2s" }} />
+                        </div>
+                        <span style={{ color: "#94a3b8", fontSize: "12px" }}>{settingsForm.rateLimitEnabled ? "已启用" : "已禁用"}</span>
+                      </button>
+                    </div>
+                    <div>
+                      <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 4px" }}>每 IP 每分钟请求限制</p>
+                      <input type="number" min={1} max={1000} value={settingsForm.rateLimitPerMinute}
+                        onChange={(e) => setSettingsForm(f => ({ ...f, rateLimitPerMinute: Number(e.target.value) }))}
+                        style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#e2e8f0", fontSize: "12px", padding: "6px 10px", outline: "none", boxSizing: "border-box" }} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── 保存 ─────────────────────────────────────── */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+                  <p style={{ color: "#334155", fontSize: "11px", margin: 0 }}>心跳间隔变更需要重启服务后生效</p>
+                  <button onClick={() => void saveSettingsFn()} disabled={settingsSaving}
+                    style={{ background: settingsSaving ? "rgba(59,130,246,0.3)" : "rgba(59,130,246,0.85)", border: "none", borderRadius: "7px", color: "white", cursor: settingsSaving ? "not-allowed" : "pointer", fontSize: "12px", fontWeight: 600, padding: "8px 20px", flexShrink: 0 }}>
+                    {settingsSaving ? "保存中…" : "保存设置"}
+                  </button>
                 </div>
               </div>
             )}

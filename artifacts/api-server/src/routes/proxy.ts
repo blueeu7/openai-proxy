@@ -328,13 +328,18 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
   res.setHeader("X-Cache-Status", stream ? "STREAMING" : "MISS");
 
   try {
-    // ── Upstream pool: only route to enabled + online nodes ─────────────────
+    // ── Weighted round-robin: only enabled + online nodes ───────────────────
     const activeUpstreams = loadUpstreams().filter((u) => u.enabled && u.status === "online");
     if (activeUpstreams.length > 0) {
-      const startIdx = rrCounter % activeUpstreams.length;
-      rrCounter++;
-      for (let i = 0; i < activeUpstreams.length; i++) {
-        const upstream = activeUpstreams[(startIdx + i) % activeUpstreams.length];
+      const totalWeight = activeUpstreams.reduce((s, u) => s + (u.weight ?? 1), 0);
+      let slot = rrCounter++ % totalWeight;
+      let primary = activeUpstreams[0];
+      for (const u of activeUpstreams) {
+        slot -= (u.weight ?? 1);
+        if (slot < 0) { primary = u; break; }
+      }
+      const ordered = [primary, ...activeUpstreams.filter((u) => u.id !== primary.id)];
+      for (const upstream of ordered) {
         // eslint-disable-next-line no-await-in-loop
         const forwarded = await forwardToUpstream(upstream, body as Record<string, unknown>, model, res, cacheKey);
         if (forwarded) return;
