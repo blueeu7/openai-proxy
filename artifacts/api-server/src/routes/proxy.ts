@@ -1,10 +1,13 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
+import { loadUpstreams, type Upstream } from "../lib/upstreams";
 
 const router: IRouter = Router();
 
 const PROXY_API_KEY = process.env.PROXY_API_KEY ?? "123";
+
+let rrCounter = 0;
 
 const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
@@ -108,6 +111,61 @@ function recordTokens(model: string, inputTokens: number, outputTokens: number) 
 function recordError(model: string) {
   usage.totalErrors++;
   getOrCreateModelStats(model).errors++;
+}
+
+async function forwardToUpstream(
+  upstream: Upstream,
+  body: Record<string, unknown>,
+  model: string,
+  res: Response,
+): Promise<boolean> {
+  const isStream = !!body.stream;
+  try {
+    const r = await fetch(`${upstream.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${upstream.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!r.ok) return false;
+
+    if (isStream) {
+      if (!r.body) return false;
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          res.write(chunk);
+          if (typeof (res as unknown as { flush?: () => void }).flush === "function") {
+            (res as unknown as { flush: () => void }).flush();
+          }
+        }
+      } finally {
+        res.end();
+      }
+    } else {
+      const data = (await r.json()) as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      if (data.usage) {
+        recordTokens(model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0);
+      }
+      res.json(data);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function authMiddleware(req: Request, res: Response, next: () => void) {
@@ -222,6 +280,20 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
   recordRequest(model);
 
   try {
+    // Try enabled upstreams first (round-robin with fallback)
+    const enabledUpstreams = loadUpstreams().filter((u) => u.enabled);
+    if (enabledUpstreams.length > 0) {
+      const startIdx = rrCounter % enabledUpstreams.length;
+      rrCounter++;
+      for (let i = 0; i < enabledUpstreams.length; i++) {
+        const upstream = enabledUpstreams[(startIdx + i) % enabledUpstreams.length];
+        // eslint-disable-next-line no-await-in-loop
+        const forwarded = await forwardToUpstream(upstream, body as Record<string, unknown>, model, res);
+        if (forwarded) return;
+      }
+      // All upstreams failed — fall through to local Replit integration
+    }
+
     if (isAnthropic) {
       const systemMessages = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n");
       const chatMessages = messages

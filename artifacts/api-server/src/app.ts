@@ -3,6 +3,7 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import proxyRouter from "./routes/proxy";
+import upstreamsRouter from "./routes/upstreams";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
@@ -31,6 +32,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 app.use("/api", router);
+app.use("/api/upstreams", upstreamsRouter);
 app.use("/v1", proxyRouter);
 
 export default app;

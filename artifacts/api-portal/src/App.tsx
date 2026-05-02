@@ -107,6 +107,22 @@ interface QuotaStatus {
   checkedAt: number;
 }
 
+interface UpstreamInfo {
+  id: string;
+  name: string;
+  url: string;
+  apiKey: string;
+  enabled: boolean;
+  createdAt: number;
+}
+
+interface UpstreamTestResult {
+  ok: boolean;
+  ms?: number;
+  error?: string;
+  testing?: boolean;
+}
+
 function calcCost(modelId: string, inputTokens: number, outputTokens: number): number {
   const p = MODEL_PRICING[modelId];
   if (!p) return 0;
@@ -207,6 +223,11 @@ export default function App() {
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [quotaStatus, setQuotaStatus] = useState<QuotaStatus | null>(null);
   const [quotaChecking, setQuotaChecking] = useState(false);
+  const [upstreams, setUpstreams] = useState<UpstreamInfo[]>([]);
+  const [upstreamForm, setUpstreamForm] = useState({ name: "", url: "", apiKey: "" });
+  const [upstreamAdding, setUpstreamAdding] = useState(false);
+  const [upstreamFormOpen, setUpstreamFormOpen] = useState(false);
+  const [testResults, setTestResults] = useState<Record<string, UpstreamTestResult>>({});
   const baseUrl = window.location.origin;
 
   const fetchUsage = useCallback(() => {
@@ -224,14 +245,61 @@ export default function App() {
       .catch(() => setQuotaChecking(false));
   }, [baseUrl]);
 
+  const fetchUpstreams = useCallback(() => {
+    fetch(`${baseUrl}/api/upstreams`)
+      .then((r) => r.json())
+      .then((data: UpstreamInfo[]) => setUpstreams(data))
+      .catch(() => {});
+  }, [baseUrl]);
+
+  const addUpstream = async () => {
+    if (!upstreamForm.name || !upstreamForm.url || !upstreamForm.apiKey) return;
+    setUpstreamAdding(true);
+    try {
+      await fetch(`${baseUrl}/api/upstreams`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(upstreamForm),
+      });
+      setUpstreamForm({ name: "", url: "", apiKey: "" });
+      setUpstreamFormOpen(false);
+      fetchUpstreams();
+    } finally {
+      setUpstreamAdding(false);
+    }
+  };
+
+  const toggleUpstream = async (id: string, enabled: boolean) => {
+    await fetch(`${baseUrl}/api/upstreams/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    fetchUpstreams();
+  };
+
+  const deleteUpstream = async (id: string) => {
+    await fetch(`${baseUrl}/api/upstreams/${id}`, { method: "DELETE" });
+    setTestResults((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    fetchUpstreams();
+  };
+
+  const testUpstream = async (id: string) => {
+    setTestResults((prev) => ({ ...prev, [id]: { ok: false, testing: true } }));
+    const r = await fetch(`${baseUrl}/api/upstreams/${id}/test`, { method: "POST" });
+    const data = (await r.json()) as UpstreamTestResult;
+    setTestResults((prev) => ({ ...prev, [id]: { ...data, testing: false } }));
+  };
+
   useEffect(() => {
     fetch(`${baseUrl}/api/healthz`).then((r) => setOnline(r.ok)).catch(() => setOnline(false));
     fetchUsage();
     fetchQuotaStatus();
+    fetchUpstreams();
     const interval = setInterval(fetchUsage, 15000);
     const quotaInterval = setInterval(fetchQuotaStatus, 60000);
     return () => { clearInterval(interval); clearInterval(quotaInterval); };
-  }, [baseUrl, fetchUsage, fetchQuotaStatus]);
+  }, [baseUrl, fetchUsage, fetchQuotaStatus, fetchUpstreams]);
 
   const activeModels = usageData
     ? Object.entries(usageData.byModel).filter(([, s]) => s.requests > 0).sort((a, b) => b[1].requests - a[1].requests)
@@ -344,6 +412,115 @@ export default function App() {
             </div>
           );
         })()}
+
+        {/* Upstream Pool */}
+        <Card>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+            <div>
+              <SectionTitle>上游节点池</SectionTitle>
+              <p style={{ color: "#64748b", fontSize: "12px", margin: "-12px 0 0" }}>
+                整合多个 Replit 账号的代理实例，请求按轮询分发，自动故障转移至本地
+              </p>
+            </div>
+            <button
+              onClick={() => setUpstreamFormOpen((v) => !v)}
+              style={{ background: "linear-gradient(135deg,#3b82f6,#6366f1)", border: "none", borderRadius: "7px", color: "white", cursor: "pointer", fontSize: "12px", fontWeight: 600, padding: "6px 14px", flexShrink: 0 }}
+            >
+              {upstreamFormOpen ? "取消" : "+ 添加节点"}
+            </button>
+          </div>
+
+          {upstreamFormOpen && (
+            <div style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: "10px", padding: "16px", marginBottom: "16px" }}>
+              <p style={{ color: "#93c5fd", fontSize: "12px", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.06em" }}>新建上游节点</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                  <input
+                    placeholder="节点名称（如 账号2）"
+                    value={upstreamForm.name}
+                    onChange={(e) => setUpstreamForm((f) => ({ ...f, name: e.target.value }))}
+                    style={{ flex: "1 1 140px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }}
+                  />
+                  <input
+                    placeholder="部署地址（如 https://xxx.replit.app）"
+                    value={upstreamForm.url}
+                    onChange={(e) => setUpstreamForm((f) => ({ ...f, url: e.target.value }))}
+                    style={{ flex: "2 1 260px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <input
+                    placeholder="API Key（PROXY_API_KEY，默认 123）"
+                    value={upstreamForm.apiKey}
+                    onChange={(e) => setUpstreamForm((f) => ({ ...f, apiKey: e.target.value }))}
+                    style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none", fontFamily: "monospace" }}
+                  />
+                  <button
+                    onClick={addUpstream}
+                    disabled={upstreamAdding || !upstreamForm.name || !upstreamForm.url || !upstreamForm.apiKey}
+                    style={{ background: upstreamAdding ? "rgba(99,102,241,0.3)" : "rgba(99,102,241,0.8)", border: "none", borderRadius: "7px", color: "white", cursor: upstreamAdding ? "not-allowed" : "pointer", fontSize: "13px", fontWeight: 600, padding: "8px 18px", flexShrink: 0 }}
+                  >
+                    {upstreamAdding ? "添加中…" : "确认添加"}
+                  </button>
+                </div>
+              </div>
+              <p style={{ color: "#475569", fontSize: "11px", margin: "10px 0 0" }}>
+                填入其他 Replit 账号部署好的代理 URL 和对应 PROXY_API_KEY，本实例会将请求转发过去
+              </p>
+            </div>
+          )}
+
+          {upstreams.length === 0 ? (
+            <div style={{ background: "rgba(0,0,0,0.15)", border: "1px dashed rgba(255,255,255,0.1)", borderRadius: "8px", padding: "24px", textAlign: "center" }}>
+              <p style={{ color: "#475569", fontSize: "24px", margin: "0 0 8px" }}>🔗</p>
+              <p style={{ color: "#475569", fontSize: "13px", margin: 0 }}>暂无上游节点。添加后，请求将优先路由至这些节点，全部失败时自动回退至本账号。</p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {upstreams.map((u) => {
+                const tr = testResults[u.id];
+                return (
+                  <div key={u.id} style={{ background: "rgba(0,0,0,0.2)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.15)" : "rgba(255,255,255,0.07)"}`, borderRadius: "9px", padding: "12px 16px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: u.enabled ? "#4ade80" : "#475569", flexShrink: 0 }} />
+                      <span style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: 600 }}>{u.name}</span>
+                      <code style={{ color: "#7dd3fc", fontSize: "11px", fontFamily: "monospace", background: "rgba(0,0,0,0.25)", padding: "2px 8px", borderRadius: "4px", wordBreak: "break-all" }}>{u.url}</code>
+                      {tr && !tr.testing && (
+                        <span style={{ fontSize: "11px", color: tr.ok ? "#4ade80" : "#f87171", background: tr.ok ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)", borderRadius: "4px", padding: "2px 7px" }}>
+                          {tr.ok ? `✓ ${tr.ms}ms` : `✗ ${tr.error?.slice(0, 60) ?? "失败"}`}
+                        </span>
+                      )}
+                      <div style={{ marginLeft: "auto", display: "flex", gap: "6px", alignItems: "center" }}>
+                        <button
+                          onClick={() => testUpstream(u.id)}
+                          disabled={tr?.testing}
+                          style={{ background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: "5px", color: "#60a5fa", cursor: tr?.testing ? "not-allowed" : "pointer", fontSize: "11px", fontWeight: 500, padding: "3px 10px", opacity: tr?.testing ? 0.5 : 1 }}
+                        >
+                          {tr?.testing ? "检测中…" : "测试"}
+                        </button>
+                        <button
+                          onClick={() => toggleUpstream(u.id, !u.enabled)}
+                          style={{ background: u.enabled ? "rgba(74,222,128,0.12)" : "rgba(100,116,139,0.15)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.25)" : "rgba(100,116,139,0.25)"}`, borderRadius: "5px", color: u.enabled ? "#4ade80" : "#64748b", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "3px 10px" }}
+                        >
+                          {u.enabled ? "已启用" : "已禁用"}
+                        </button>
+                        <button
+                          onClick={() => deleteUpstream(u.id)}
+                          style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "5px", color: "#f87171", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "3px 10px" }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <p style={{ color: "#334155", fontSize: "11px", margin: "6px 0 0" }}>
+                ⟳ 轮询策略：每次请求按顺序选取下一个启用节点，失败自动跳至下一个，全部失败则回退至本账号的 Replit 集成
+              </p>
+            </div>
+          )}
+        </Card>
 
         {/* Usage Stats */}
         <Card>
