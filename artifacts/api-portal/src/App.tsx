@@ -246,6 +246,8 @@ export default function App() {
   const [upstreamFormOpen, setUpstreamFormOpen] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, UpstreamTestResult>>({});
   const [cacheSize, setCacheSize] = useState<number | null>(null);
+  const [nodeTab, setNodeTab] = useState<"nodes" | "cluster" | "deploy">("nodes");
+  const [expandedNode, setExpandedNode] = useState<string | null>(null);
   const baseUrl = window.location.origin;
 
   const fetchUsage = useCallback(() => {
@@ -319,6 +321,11 @@ export default function App() {
 
   const wakeUpstreamNode = async (id: string) => {
     await fetch(`${baseUrl}/api/upstreams/${id}/wake`, { method: "POST" });
+    fetchUpstreams();
+  };
+
+  const wakeAll = async () => {
+    await fetch(`${baseUrl}/api/upstreams/wake-all`, { method: "POST" });
     fetchUpstreams();
   };
 
@@ -446,168 +453,349 @@ export default function App() {
         })()}
 
         {/* Node Management Panel */}
-        <Card>
-          {/* Header */}
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "14px", gap: "12px" }}>
-            <div>
-              <SectionTitle>节点管理</SectionTitle>
-              <p style={{ color: "#64748b", fontSize: "12px", margin: "-12px 0 0" }}>
-                中心调度器 · 轮询路由 · 自动健康监测 · 故障转移至本地
-              </p>
-            </div>
-            <button
-              onClick={() => setUpstreamFormOpen((v) => !v)}
-              style={{ background: "linear-gradient(135deg,#3b82f6,#6366f1)", border: "none", borderRadius: "7px", color: "white", cursor: "pointer", fontSize: "12px", fontWeight: 600, padding: "6px 14px", flexShrink: 0 }}
-            >
-              {upstreamFormOpen ? "取消" : "+ 注册节点"}
-            </button>
+        <Card style={{ padding: 0 }}>
+          {/* ── Tab Bar ─────────────────────────────────────────────── */}
+          <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "0 20px" }}>
+            {(["nodes", "cluster", "deploy"] as const).map((tab) => (
+              <button key={tab} onClick={() => setNodeTab(tab)} style={{
+                background: "transparent", border: "none",
+                borderBottom: nodeTab === tab ? "2px solid #3b82f6" : "2px solid transparent",
+                color: nodeTab === tab ? "#60a5fa" : "#475569",
+                cursor: "pointer", fontSize: "12px",
+                fontWeight: nodeTab === tab ? 600 : 400,
+                padding: "11px 14px", transition: "color 0.15s",
+              }}>
+                {tab === "nodes" ? "节点管理" : tab === "cluster" ? "集群" : "部署代码"}
+              </button>
+            ))}
           </div>
 
-          {/* Cluster Summary */}
-          {upstreams.length > 0 && (() => {
-            const total = upstreams.length;
-            const online = upstreams.filter(u => u.enabled && u.status === "online").length;
-            const offline = upstreams.filter(u => u.enabled && u.status === "offline").length;
-            const quota = upstreams.filter(u => u.status === "quota_exceeded").length;
-            const monthly = upstreams.filter(u => u.status === "monthly_limit").length;
-            const banned = upstreams.filter(u => !u.enabled || u.status === "banned").length;
-            return (
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "14px", padding: "10px 14px", background: "rgba(0,0,0,0.2)", borderRadius: "8px", alignItems: "center" }}>
-                <span style={{ color: "#64748b", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginRight: "4px" }}>集群</span>
-                {[
-                  { label: "在线", count: online, color: "#4ade80" },
-                  { label: "离线", count: offline, color: "#f87171" },
-                  { label: "超限", count: quota + monthly, color: "#fbbf24" },
-                  { label: "停用", count: banned, color: "#475569" },
-                ].map(({ label, count, color }) => count > 0 && (
-                  <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: "4px", background: "rgba(255,255,255,0.05)", borderRadius: "5px", padding: "3px 8px" }}>
-                    <span style={{ color, fontSize: "13px", fontWeight: 700 }}>{count}</span>
-                    <span style={{ color: "#64748b", fontSize: "11px" }}>{label}</span>
-                  </span>
-                ))}
-                <span style={{ marginLeft: "auto", color: "#334155", fontSize: "11px" }}>共 {total} 节点</span>
-              </div>
-            );
-          })()}
+          <div style={{ padding: "20px 24px" }}>
 
-          {/* Add Form */}
-          {upstreamFormOpen && (
-            <div style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: "10px", padding: "16px", marginBottom: "16px" }}>
-              <p style={{ color: "#93c5fd", fontSize: "12px", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.06em" }}>注册新节点</p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                  <input placeholder="节点名称（如 账号2）" value={upstreamForm.name}
-                    onChange={(e) => setUpstreamForm((f) => ({ ...f, name: e.target.value }))}
-                    style={{ flex: "1 1 140px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }} />
-                  <input placeholder="部署地址（如 https://xxx.replit.app）" value={upstreamForm.url}
-                    onChange={(e) => setUpstreamForm((f) => ({ ...f, url: e.target.value }))}
-                    style={{ flex: "2 1 260px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none" }} />
+            {/* ══════════════ 节点管理 TAB ══════════════ */}
+            {nodeTab === "nodes" && <>
+              {/* Endpoint row */}
+              <div style={{ display: "flex", gap: "10px", marginBottom: "14px", flexWrap: "wrap" }}>
+                <div style={{ flex: "2 1 180px", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", padding: "9px 13px" }}>
+                  <p style={{ color: "#475569", fontSize: "10px", fontWeight: 600, margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.07em" }}>接入端点 (Base URL)</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <code style={{ color: "#7dd3fc", fontSize: "12px", fontFamily: "monospace", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{baseUrl}/v1</code>
+                    <CopyButton text={`${baseUrl}/v1`} />
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: "10px" }}>
-                  <input placeholder="API Key（PROXY_API_KEY，默认 123）" value={upstreamForm.apiKey}
-                    onChange={(e) => setUpstreamForm((f) => ({ ...f, apiKey: e.target.value }))}
-                    style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "13px", padding: "8px 12px", outline: "none", fontFamily: "monospace" }} />
-                  <button onClick={addUpstream}
-                    disabled={upstreamAdding || !upstreamForm.name || !upstreamForm.url || !upstreamForm.apiKey}
-                    style={{ background: upstreamAdding ? "rgba(99,102,241,0.3)" : "rgba(99,102,241,0.8)", border: "none", borderRadius: "7px", color: "white", cursor: upstreamAdding ? "not-allowed" : "pointer", fontSize: "13px", fontWeight: 600, padding: "8px 18px", flexShrink: 0 }}>
-                    {upstreamAdding ? "添加中…" : "确认注册"}
+                <div style={{ flex: "1 1 120px", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", padding: "9px 13px" }}>
+                  <p style={{ color: "#475569", fontSize: "10px", fontWeight: 600, margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.07em" }}>节点总数</p>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
+                    <span style={{ color: "#e2e8f0", fontSize: "18px", fontWeight: 700 }}>{upstreams.length}</span>
+                    <span style={{ color: "#4ade80", fontSize: "12px" }}>{upstreams.filter(u => u.enabled && u.status === "online").length} 在线</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Auto-protection mechanism */}
+              <div style={{ background: "rgba(239,68,68,0.04)", border: "1px solid rgba(239,68,68,0.14)", borderRadius: "9px", padding: "12px 14px", marginBottom: "14px" }}>
+                <p style={{ color: "#fca5a5", fontSize: "12px", fontWeight: 600, margin: "0 0 9px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  🛡️ 自动保护机制
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "3px 16px" }}>
+                  {[
+                    "429 配额超限 → 标记「超限」，停止路由，保留数据",
+                    "403 月度限制 → 标记「月限」，停止路由，保留数据",
+                    "3 次连续失败 → 标记「离线」，自动下线",
+                    "5xx 服务错误 → 计入失败次数，累计触发下线",
+                    "请求失败 → 自动切换下一个可用节点",
+                    "心跳检测 60s → 恢复在线时自动解除离线状态",
+                  ].map((rule) => (
+                    <div key={rule} style={{ display: "flex", gap: "6px", alignItems: "flex-start" }}>
+                      <span style={{ color: "#ef4444", fontSize: "10px", marginTop: "2px", flexShrink: 0 }}>•</span>
+                      <span style={{ color: "#94a3b8", fontSize: "11px", lineHeight: 1.55 }}>{rule}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Stats bar + action buttons */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", flexWrap: "wrap" }}>
+                <span style={{ background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "5px", color: "#64748b", fontSize: "11px", padding: "4px 10px" }}>
+                  共 <strong style={{ color: "#94a3b8" }}>{upstreams.length}</strong> 节点，<strong style={{ color: "#94a3b8" }}>{upstreams.filter(u => u.enabled).length}</strong> 启用
+                </span>
+                <span style={{ background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "5px", color: "#64748b", fontSize: "11px", padding: "4px 10px" }}>
+                  总请求 <strong style={{ color: "#94a3b8" }}>{upstreams.reduce((s, u) => s + u.totalRequests, 0)}</strong>
+                </span>
+                {usageData && (
+                  <span style={{ background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "5px", color: "#64748b", fontSize: "11px", padding: "4px 10px" }}>
+                    总Token <strong style={{ color: "#a78bfa" }}>{formatTokens(usageData.totalInputTokens + usageData.totalOutputTokens)}</strong>
+                  </span>
+                )}
+                <div style={{ marginLeft: "auto", display: "flex", gap: "6px" }}>
+                  {upstreams.some(u => u.enabled && u.status !== "online") && (
+                    <button onClick={wakeAll} style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "6px", color: "#fbbf24", cursor: "pointer", fontSize: "11px", fontWeight: 600, padding: "5px 12px" }}>
+                      ⚡ 唤醒全部
+                    </button>
+                  )}
+                  <button onClick={() => { setUpstreamFormOpen(v => !v); }} style={{ background: upstreamFormOpen ? "rgba(99,102,241,0.15)" : "linear-gradient(135deg,#3b82f6,#6366f1)", border: "none", borderRadius: "6px", color: "white", cursor: "pointer", fontSize: "11px", fontWeight: 600, padding: "5px 12px" }}>
+                    {upstreamFormOpen ? "取消" : "+ 手动添加"}
                   </button>
                 </div>
               </div>
-              <p style={{ color: "#475569", fontSize: "11px", margin: "10px 0 0" }}>
-                节点默认被动接收流量，注册后自动纳入轮询池。每 60 秒自动健康检测，429/403 自动标记状态，3 次连续失败后标记为离线。
-              </p>
-            </div>
-          )}
 
-          {/* Node Grid */}
-          {upstreams.length === 0 ? (
-            <div style={{ background: "rgba(0,0,0,0.15)", border: "1px dashed rgba(255,255,255,0.1)", borderRadius: "8px", padding: "32px", textAlign: "center" }}>
-              <p style={{ color: "#475569", fontSize: "28px", margin: "0 0 10px" }}>🔗</p>
-              <p style={{ color: "#64748b", fontSize: "13px", margin: "0 0 4px", fontWeight: 600 }}>暂无节点</p>
-              <p style={{ color: "#475569", fontSize: "12px", margin: 0 }}>注册其他 Replit 账号部署的代理地址后，请求将优先路由至节点池，全部失败时回退至本账号。</p>
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "10px" }}>
-              {upstreams.map((u) => {
-                const effectiveStatus: NodeStatus = !u.enabled ? "banned" : u.status;
-                const cfg = STATUS_CFG[effectiveStatus];
-                const tr = testResults[u.id];
-                const canWake = u.enabled && effectiveStatus !== "online";
-                const lastSeen = u.lastSeenAt ? timeAgo(u.lastSeenAt) : null;
-                const lastErr = u.lastErrorAt ? timeAgo(u.lastErrorAt) : null;
-                return (
-                  <div key={u.id} style={{ background: "rgba(0,0,0,0.22)", border: `1px solid ${cfg.border}`, borderRadius: "10px", padding: "14px 16px" }}>
-                    {/* Card header */}
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.color, flexShrink: 0, boxShadow: effectiveStatus === "online" ? `0 0 0 3px ${cfg.bg}` : undefined }} />
-                      <span style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</span>
-                      <span style={{ background: cfg.bg, border: `1px solid ${cfg.border}`, borderRadius: "5px", color: cfg.color, fontSize: "10px", fontWeight: 700, padding: "2px 7px", flexShrink: 0 }}>
-                        {cfg.label}
-                      </span>
+              {/* Add form */}
+              {upstreamFormOpen && (
+                <div style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: "9px", padding: "14px 16px", marginBottom: "14px" }}>
+                  <p style={{ color: "#93c5fd", fontSize: "11px", fontWeight: 600, margin: "0 0 10px", textTransform: "uppercase", letterSpacing: "0.07em" }}>注册新节点</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                      <input placeholder="节点名称（如 账号2）" value={upstreamForm.name}
+                        onChange={(e) => setUpstreamForm((f) => ({ ...f, name: e.target.value }))}
+                        style={{ flex: "1 1 130px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "12px", padding: "7px 11px", outline: "none" }} />
+                      <input placeholder="部署地址（如 https://xxx.replit.app）" value={upstreamForm.url}
+                        onChange={(e) => setUpstreamForm((f) => ({ ...f, url: e.target.value }))}
+                        style={{ flex: "2 1 240px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "12px", padding: "7px 11px", outline: "none" }} />
                     </div>
-
-                    {/* URL */}
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
-                      <code style={{ color: "#7dd3fc", fontSize: "11px", fontFamily: "monospace", background: "rgba(0,0,0,0.3)", padding: "3px 8px", borderRadius: "4px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.url}</code>
-                      <CopyButton text={u.url} />
-                    </div>
-
-                    {/* Stats row */}
-                    <div style={{ display: "flex", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
-                      <span style={{ color: "#64748b", fontSize: "11px" }}>请求 <span style={{ color: "#94a3b8", fontWeight: 600 }}>{u.totalRequests}</span></span>
-                      {u.totalErrors > 0 && <span style={{ color: "#64748b", fontSize: "11px" }}>错误 <span style={{ color: "#f87171", fontWeight: 600 }}>{u.totalErrors}</span></span>}
-                      {u.consecutiveFailures > 0 && <span style={{ color: "#64748b", fontSize: "11px" }}>连续失败 <span style={{ color: "#fbbf24", fontWeight: 600 }}>{u.consecutiveFailures}</span></span>}
-                      {lastSeen && <span style={{ color: "#475569", fontSize: "11px" }}>最近在线 {lastSeen}</span>}
-                    </div>
-
-                    {/* Error message */}
-                    {u.lastErrorMsg && effectiveStatus !== "online" && (
-                      <div style={{ background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.15)", borderRadius: "5px", padding: "5px 8px", marginBottom: "10px" }}>
-                        <span style={{ color: "#f87171", fontSize: "11px" }}>{u.lastErrorMsg}</span>
-                        {lastErr && <span style={{ color: "#475569", fontSize: "10px", marginLeft: "6px" }}>{lastErr}</span>}
-                      </div>
-                    )}
-
-                    {/* Test result */}
-                    {tr && !tr.testing && (
-                      <div style={{ background: tr.ok ? "rgba(74,222,128,0.07)" : "rgba(248,113,113,0.07)", border: `1px solid ${tr.ok ? "rgba(74,222,128,0.15)" : "rgba(248,113,113,0.15)"}`, borderRadius: "5px", padding: "5px 8px", marginBottom: "10px" }}>
-                        <span style={{ color: tr.ok ? "#4ade80" : "#f87171", fontSize: "11px" }}>
-                          {tr.ok ? `✓ 连通 ${tr.ms}ms` : `✗ ${tr.error?.slice(0, 80) ?? "失败"}`}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Actions */}
-                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                      <button onClick={() => testUpstream(u.id)} disabled={tr?.testing}
-                        style={{ background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: "5px", color: "#60a5fa", cursor: tr?.testing ? "not-allowed" : "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px", opacity: tr?.testing ? 0.5 : 1 }}>
-                        {tr?.testing ? "检测中…" : "测试"}
-                      </button>
-                      {canWake && (
-                        <button onClick={() => wakeUpstreamNode(u.id)}
-                          style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "5px", color: "#fbbf24", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px" }}>
-                          唤醒
-                        </button>
-                      )}
-                      <button onClick={() => toggleUpstream(u.id, !u.enabled)}
-                        style={{ background: u.enabled ? "rgba(74,222,128,0.1)" : "rgba(100,116,139,0.12)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.2)" : "rgba(100,116,139,0.2)"}`, borderRadius: "5px", color: u.enabled ? "#4ade80" : "#64748b", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px" }}>
-                        {u.enabled ? "禁用" : "启用"}
-                      </button>
-                      <button onClick={() => deleteUpstream(u.id)}
-                        style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", borderRadius: "5px", color: "#f87171", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 11px", marginLeft: "auto" }}>
-                        删除
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <input placeholder="API Key（PROXY_API_KEY，默认 123）" value={upstreamForm.apiKey}
+                        onChange={(e) => setUpstreamForm((f) => ({ ...f, apiKey: e.target.value }))}
+                        style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", color: "#e2e8f0", fontSize: "12px", padding: "7px 11px", outline: "none", fontFamily: "monospace" }} />
+                      <button onClick={addUpstream}
+                        disabled={upstreamAdding || !upstreamForm.name || !upstreamForm.url || !upstreamForm.apiKey}
+                        style={{ background: upstreamAdding ? "rgba(99,102,241,0.3)" : "rgba(99,102,241,0.85)", border: "none", borderRadius: "7px", color: "white", cursor: upstreamAdding ? "not-allowed" : "pointer", fontSize: "12px", fontWeight: 600, padding: "7px 16px", flexShrink: 0 }}>
+                        {upstreamAdding ? "添加中…" : "确认"}
                       </button>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                </div>
+              )}
 
-          <p style={{ color: "#334155", fontSize: "11px", margin: "12px 0 0" }}>
-            ⟳ 仅路由至状态为「在线」的节点 · 60s 自动心跳检测 · 429→超限 / 403→月限 / 3次失败→离线 · 点击「唤醒」手动恢复
-          </p>
+              {/* Compact node grid */}
+              {upstreams.length === 0 ? (
+                <div style={{ background: "rgba(0,0,0,0.15)", border: "1px dashed rgba(255,255,255,0.1)", borderRadius: "8px", padding: "32px", textAlign: "center" }}>
+                  <p style={{ color: "#475569", fontSize: "28px", margin: "0 0 8px" }}>🔗</p>
+                  <p style={{ color: "#64748b", fontSize: "13px", margin: "0 0 4px", fontWeight: 600 }}>暂无节点</p>
+                  <p style={{ color: "#475569", fontSize: "12px", margin: 0 }}>注册其他 Replit 账号部署的代理地址后，请求将优先路由至节点池，全部失败时回退至本账号。</p>
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "7px", marginBottom: "10px" }}>
+                    {upstreams.map((u) => {
+                      const eff: NodeStatus = !u.enabled ? "banned" : u.status;
+                      const cfg = STATUS_CFG[eff];
+                      const isSelected = expandedNode === u.id;
+                      return (
+                        <div key={u.id} onClick={() => setExpandedNode(isSelected ? null : u.id)}
+                          style={{
+                            width: "128px", flexShrink: 0,
+                            background: isSelected ? cfg.bg : "rgba(0,0,0,0.22)",
+                            border: `1px solid ${isSelected ? cfg.color : cfg.border}`,
+                            borderRadius: "8px", padding: "8px 10px", cursor: "pointer",
+                            transition: "border-color 0.15s, background 0.15s",
+                          }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "5px", marginBottom: "4px" }}>
+                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: cfg.color, flexShrink: 0 }} />
+                            <span style={{ color: "#e2e8f0", fontSize: "11px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</span>
+                          </div>
+                          <span style={{ color: cfg.color, fontSize: "10px" }}>{cfg.label}</span>
+                          {u.totalRequests > 0 && <span style={{ color: "#334155", fontSize: "10px", marginLeft: "6px" }}>{u.totalRequests}次</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Expanded detail panel */}
+                  {expandedNode ? (() => {
+                    const u = upstreams.find(x => x.id === expandedNode);
+                    if (!u) return null;
+                    const eff: NodeStatus = !u.enabled ? "banned" : u.status;
+                    const cfg = STATUS_CFG[eff];
+                    const tr = testResults[u.id];
+                    const canWake = u.enabled && eff !== "online";
+                    return (
+                      <div style={{ background: "rgba(0,0,0,0.28)", border: `1px solid ${cfg.border}`, borderRadius: "10px", padding: "14px 16px" }}>
+                        {/* Detail header */}
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.color, flexShrink: 0 }} />
+                          <span style={{ color: "#e2e8f0", fontSize: "14px", fontWeight: 700 }}>{u.name}</span>
+                          <span style={{ background: cfg.bg, border: `1px solid ${cfg.border}`, borderRadius: "5px", color: cfg.color, fontSize: "10px", fontWeight: 700, padding: "2px 7px" }}>{cfg.label}</span>
+                          <button onClick={() => setExpandedNode(null)}
+                            style={{ marginLeft: "auto", background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: "18px", lineHeight: 1, padding: "0 4px" }}>×</button>
+                        </div>
+
+                        {/* URL */}
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
+                          <code style={{ color: "#7dd3fc", fontSize: "11px", fontFamily: "monospace", background: "rgba(0,0,0,0.3)", padding: "4px 9px", borderRadius: "4px", flex: 1, wordBreak: "break-all" }}>{u.url}</code>
+                          <CopyButton text={u.url} />
+                        </div>
+
+                        {/* Stats grid */}
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px", marginBottom: "12px" }}>
+                          {[
+                            { label: "总请求", value: u.totalRequests, color: "#94a3b8" },
+                            { label: "总错误", value: u.totalErrors, color: u.totalErrors > 0 ? "#f87171" : "#475569" },
+                            { label: "连续失败", value: u.consecutiveFailures, color: u.consecutiveFailures > 0 ? "#fbbf24" : "#475569" },
+                          ].map(({ label, value, color }) => (
+                            <div key={label} style={{ background: "rgba(0,0,0,0.2)", borderRadius: "6px", padding: "8px 10px", textAlign: "center" }}>
+                              <p style={{ color, fontSize: "20px", fontWeight: 700, margin: "0 0 2px", fontVariantNumeric: "tabular-nums" }}>{value}</p>
+                              <p style={{ color: "#475569", fontSize: "10px", margin: 0 }}>{label}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Time info */}
+                        {(u.lastSeenAt || u.lastErrorAt) && (
+                          <div style={{ display: "flex", gap: "16px", marginBottom: "10px", flexWrap: "wrap" }}>
+                            {u.lastSeenAt && <span style={{ color: "#475569", fontSize: "11px" }}>最近在线 <span style={{ color: "#64748b" }}>{timeAgo(u.lastSeenAt)}</span></span>}
+                            {u.lastErrorAt && <span style={{ color: "#475569", fontSize: "11px" }}>最近错误 <span style={{ color: "#64748b" }}>{timeAgo(u.lastErrorAt)}</span></span>}
+                          </div>
+                        )}
+
+                        {/* Error message */}
+                        {u.lastErrorMsg && eff !== "online" && (
+                          <div style={{ background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.15)", borderRadius: "5px", padding: "5px 10px", marginBottom: "10px" }}>
+                            <span style={{ color: "#f87171", fontSize: "11px" }}>{u.lastErrorMsg}</span>
+                          </div>
+                        )}
+
+                        {/* Test result */}
+                        {tr && !tr.testing && (
+                          <div style={{ background: tr.ok ? "rgba(74,222,128,0.07)" : "rgba(248,113,113,0.07)", border: `1px solid ${tr.ok ? "rgba(74,222,128,0.15)" : "rgba(248,113,113,0.15)"}`, borderRadius: "5px", padding: "5px 10px", marginBottom: "10px" }}>
+                            <span style={{ color: tr.ok ? "#4ade80" : "#f87171", fontSize: "11px" }}>
+                              {tr.ok ? `✓ 连通 ${tr.ms}ms` : `✗ ${tr.error?.slice(0, 100) ?? "失败"}`}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Actions */}
+                        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                          <button onClick={() => testUpstream(u.id)} disabled={tr?.testing}
+                            style={{ background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: "5px", color: "#60a5fa", cursor: tr?.testing ? "not-allowed" : "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px", opacity: tr?.testing ? 0.5 : 1 }}>
+                            {tr?.testing ? "检测中…" : "测试连通性"}
+                          </button>
+                          {canWake && (
+                            <button onClick={() => { void wakeUpstreamNode(u.id); setExpandedNode(null); }}
+                              style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "5px", color: "#fbbf24", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px" }}>
+                              唤醒节点
+                            </button>
+                          )}
+                          <button onClick={() => toggleUpstream(u.id, !u.enabled)}
+                            style={{ background: u.enabled ? "rgba(74,222,128,0.1)" : "rgba(100,116,139,0.12)", border: `1px solid ${u.enabled ? "rgba(74,222,128,0.2)" : "rgba(100,116,139,0.2)"}`, borderRadius: "5px", color: u.enabled ? "#4ade80" : "#64748b", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px" }}>
+                            {u.enabled ? "禁用" : "启用"}
+                          </button>
+                          <button onClick={() => { void deleteUpstream(u.id); setExpandedNode(null); }}
+                            style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", borderRadius: "5px", color: "#f87171", cursor: "pointer", fontSize: "11px", fontWeight: 500, padding: "4px 12px", marginLeft: "auto" }}>
+                            删除节点
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })() : (
+                    <p style={{ color: "#334155", fontSize: "11px", textAlign: "center", padding: "10px 0 0" }}>
+                      点击上面的节点小格查看详情和操作
+                    </p>
+                  )}
+                </>
+              )}
+            </>}
+
+            {/* ══════════════ 集群 TAB ══════════════ */}
+            {nodeTab === "cluster" && (() => {
+              const total = upstreams.length;
+              if (total === 0) return <p style={{ color: "#475569", fontSize: "13px", textAlign: "center", padding: "32px 0" }}>暂无节点数据</p>;
+              const groups: { label: string; status: NodeStatus | "disabled"; color: string; bg: string; border: string; nodes: UpstreamInfo[] }[] = [
+                { label: "在线", status: "online",         color: "#4ade80", bg: "rgba(74,222,128,0.08)",   border: "rgba(74,222,128,0.2)",   nodes: upstreams.filter(u => u.enabled && u.status === "online") },
+                { label: "离线", status: "offline",        color: "#f87171", bg: "rgba(248,113,113,0.08)", border: "rgba(248,113,113,0.2)", nodes: upstreams.filter(u => u.enabled && u.status === "offline") },
+                { label: "429超限", status: "quota_exceeded", color: "#fbbf24", bg: "rgba(251,191,36,0.08)",  border: "rgba(251,191,36,0.2)",  nodes: upstreams.filter(u => u.status === "quota_exceeded") },
+                { label: "403月限", status: "monthly_limit",  color: "#fb923c", bg: "rgba(251,146,60,0.08)",  border: "rgba(251,146,60,0.2)",  nodes: upstreams.filter(u => u.status === "monthly_limit") },
+                { label: "已停用", status: "disabled",     color: "#64748b", bg: "rgba(100,116,139,0.08)", border: "rgba(100,116,139,0.2)", nodes: upstreams.filter(u => !u.enabled) },
+              ].filter(g => g.nodes.length > 0);
+
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "8px", marginBottom: "6px" }}>
+                    {[
+                      { label: "节点总数", value: total, color: "#e2e8f0" },
+                      { label: "在线可用", value: upstreams.filter(u => u.enabled && u.status === "online").length, color: "#4ade80" },
+                      { label: "累计请求", value: upstreams.reduce((s, u) => s + u.totalRequests, 0), color: "#60a5fa" },
+                      { label: "累计错误", value: upstreams.reduce((s, u) => s + u.totalErrors, 0), color: "#f87171" },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} style={{ background: "rgba(0,0,0,0.25)", borderRadius: "8px", padding: "12px 14px", textAlign: "center" }}>
+                        <p style={{ color, fontSize: "22px", fontWeight: 700, margin: "0 0 3px", fontVariantNumeric: "tabular-nums" }}>{value}</p>
+                        <p style={{ color: "#475569", fontSize: "11px", margin: 0 }}>{label}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {groups.map(g => (
+                    <div key={g.label} style={{ background: g.bg, border: `1px solid ${g.border}`, borderRadius: "8px", padding: "10px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                        <span style={{ color: g.color, fontSize: "12px", fontWeight: 600 }}>{g.label}</span>
+                        <span style={{ color: g.color, fontSize: "11px", background: `${g.border}`, borderRadius: "4px", padding: "1px 6px" }}>{g.nodes.length} 节点</span>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                        {g.nodes.map(n => (
+                          <div key={n.id} style={{ background: "rgba(0,0,0,0.2)", borderRadius: "5px", padding: "3px 10px", display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span style={{ color: "#94a3b8", fontSize: "11px" }}>{n.name}</span>
+                            <span style={{ color: "#334155", fontSize: "10px" }}>{n.totalRequests}次</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* ══════════════ 部署代码 TAB ══════════════ */}
+            {nodeTab === "deploy" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: "9px", padding: "14px 16px" }}>
+                  <p style={{ color: "#93c5fd", fontSize: "12px", fontWeight: 600, margin: "0 0 8px" }}>📋 如何添加新的 Replit 节点</p>
+                  <ol style={{ color: "#94a3b8", fontSize: "12px", lineHeight: 2, margin: 0, paddingLeft: "18px" }}>
+                    <li>在新 Replit 账号中 Fork 本项目</li>
+                    <li>在 Secrets 中设置 <code style={{ color: "#7dd3fc", background: "rgba(0,0,0,0.3)", padding: "1px 6px", borderRadius: "3px" }}>PROXY_API_KEY</code> 为任意密钥</li>
+                    <li>点击 Deploy 部署，获得节点 URL</li>
+                    <li>回到本页「节点管理」→「+ 手动添加」注册节点</li>
+                  </ol>
+                </div>
+
+                <div>
+                  <p style={{ color: "#64748b", fontSize: "11px", fontWeight: 600, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.07em" }}>注册节点 API</p>
+                  <div style={{ position: "relative" }}>
+                    <pre style={{ background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#e2e8f0", fontSize: "12px", fontFamily: "monospace", padding: "14px 16px", margin: 0, overflowX: "auto", lineHeight: 1.6 }}>{`POST ${baseUrl}/api/upstreams
+Content-Type: application/json
+
+{
+  "name": "账号2",
+  "url": "https://your-node.replit.app",
+  "apiKey": "your-proxy-api-key"
+}`}</pre>
+                    <div style={{ position: "absolute", top: "8px", right: "8px" }}>
+                      <CopyButton text={`POST ${baseUrl}/api/upstreams\nContent-Type: application/json\n\n{\n  "name": "账号2",\n  "url": "https://your-node.replit.app",\n  "apiKey": "your-proxy-api-key"\n}`} />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <p style={{ color: "#64748b", fontSize: "11px", fontWeight: 600, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.07em" }}>客户端接入示例（Python）</p>
+                  <div style={{ position: "relative" }}>
+                    <pre style={{ background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#e2e8f0", fontSize: "12px", fontFamily: "monospace", padding: "14px 16px", margin: 0, overflowX: "auto", lineHeight: 1.6 }}>{`from openai import OpenAI
+
+client = OpenAI(
+    base_url="${baseUrl}/v1",
+    api_key="your-proxy-api-key",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)`}</pre>
+                    <div style={{ position: "absolute", top: "8px", right: "8px" }}>
+                      <CopyButton text={`from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${baseUrl}/v1",\n    api_key="your-proxy-api-key",\n)\n\nresponse = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)`} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </div>
         </Card>
 
         {/* Usage Stats */}

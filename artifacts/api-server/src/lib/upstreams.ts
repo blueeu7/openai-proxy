@@ -135,6 +135,21 @@ export function markUpstreamFailure(id: string, msg: string): void {
   });
 }
 
+export function wakeAllUpstreams(): number {
+  const list = loadUpstreams();
+  let count = 0;
+  for (const u of list) {
+    if (u.enabled && u.status !== "online" && u.status !== "banned") {
+      u.status = "online";
+      u.consecutiveFailures = 0;
+      u.lastErrorMsg = null;
+      count++;
+    }
+  }
+  saveUpstreams(list);
+  return count;
+}
+
 export function clusterSummary() {
   const all = loadUpstreams();
   return {

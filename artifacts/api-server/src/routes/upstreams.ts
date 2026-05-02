@@ -5,6 +5,7 @@ import {
   updateUpstream,
   removeUpstream,
   wakeUpstream,
+  wakeAllUpstreams,
   markUpstreamOnline,
   markUpstreamError,
   markUpstreamFailure,
@@ -39,6 +40,11 @@ router.post("/", (req: Request, res: Response) => {
   }
   const upstream = addUpstream(name, url, apiKey, enabled ?? true);
   res.status(201).json(maskKey(upstream));
+});
+
+router.post("/wake-all", (_req: Request, res: Response) => {
+  const woken = wakeAllUpstreams();
+  res.json({ ok: true, woken });
 });
 
 router.patch("/:id", (req: Request, res: Response) => {
